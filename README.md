@@ -164,5 +164,3 @@ Get-Content -LiteralPath $file
 - [Pi Web](https://github.com/agegr/pi-web) · [Pi](https://github.com/earendil-works/pi) · [kevotter/pi-web](https://github.com/kevotter/pi-web)
 
 本项目不是上游官方客户端，代码和文档用 [MIT 许可证](LICENSE)。应用图标是 [Pi 项目](https://github.com/earendil-works/pi) 的 logo（MIT），署名见 [第三方许可说明](THIRD_PARTY_NOTICES.md)。
-
-启动页那句 `Ciallo～(∠・ω< )⌒★` 内嵌了一份**思源宋体**（[Source Han Serif SC](https://github.com/adobe-fonts/source-han-serif)，Adobe，SIL Open Font License 1.1）的字体子集，只有那串文本用到的字形，约 5 KB；因为子集属于 OFL 的“修改版”，家族名改成了 `Ciallo Serif`，字体内部的版权与商标声明原样保留。子集仍受 OFL 约束，不适用本项目的 MIT 许可；许可证原文在 `ui/fonts/OFL.txt`，并会并进安装目录里的 `THIRD_PARTY_FRONTEND_LICENSES.txt`。细节见[第三方许可说明](THIRD_PARTY_NOTICES.md)。

@@ -5,7 +5,7 @@ const path = require("node:path")
 const { test } = require("node:test")
 const { checkCsp, compareCsp, parsePolicy } = require("./check-csp")
 
-const HEADER = "default-src 'none'; img-src 'self'; font-src 'self'; style-src 'self' 'unsafe-inline'"
+const HEADER = "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'self' 'unsafe-inline'"
 
 function fixture(t, { header = HEADER, pages = { "index.html": HEADER } } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-csp-"))
@@ -26,7 +26,7 @@ function fixture(t, { header = HEADER, pages = { "index.html": HEADER } } = {}) 
 }
 
 test("parsing keeps directive order irrelevant and rejects duplicates", () => {
-  assert.deepEqual([...parsePolicy("img-src 'self'; font-src 'self'").keys()], ["img-src", "font-src"])
+  assert.deepEqual([...parsePolicy("img-src 'self'; media-src 'self'").keys()], ["img-src", "media-src"])
   assert.throws(() => parsePolicy("img-src 'self'; img-src data:"), /appears twice/)
 })
 
@@ -43,14 +43,14 @@ test("every page's policy has to be permitted by the shipped header", t => {
   assert.throws(() => checkCsp(root), /CSP mismatch|Content Security Policy mismatch/)
 })
 
-test("a directive only in the page is the regression that shipped broken fonts", t => {
-  // Exactly the 0.1.2 bug: the page allows the embedded font, the header falls
-  // back to default-src 'none' and blocks it once installed.
+test("a directive only in the page is blocked once the app is installed", t => {
+  // The page allows it, the header falls back to default-src 'none' and the
+  // installed webview refuses the request while every browser preview passes.
   const root = fixture(t, {
-    header: HEADER.replace("; font-src 'self'", ""),
+    header: HEADER.replace("; media-src 'self'", ""),
   })
   assert.deepEqual(compareCsp(root), [
-    "ui/index.html: font-src is missing from tauri.conf.json, so the packaged app falls back to its default-src",
+    "ui/index.html: media-src is missing from tauri.conf.json, so the packaged app falls back to its default-src",
   ])
 })
 

@@ -1083,11 +1083,20 @@ fn copy_server_url(app: &AppHandle, context: &Context, url: &str) {
 
 /// Push the current startup phase into the loading page.
 ///
-/// The page shows no phase text any more — the animation alone is the progress
-/// signal — but the attribute still drives the failure layout and tells a
-/// reader of the page what is going on.
-fn emit_phase(app: &AppHandle, phase: &str) {
-    let payload = serde_json::json!({ "phase": phase });
+/// The page explains progress with a status line, a three-step list and the
+/// loopback address it is about to open, so every payload carries all three;
+/// `data-phase` alone also drives the failure layout.
+fn emit_phase(app: &AppHandle, phase: &str, port: u16) {
+    let status = match phase {
+        "environment" => "正在检查运行环境",
+        "backend" => "正在连接本地服务",
+        _ => "正在打开工作空间",
+    };
+    let payload = serde_json::json!({
+        "phase": phase,
+        "status": status,
+        "endpoint": format!("127.0.0.1:{port}"),
+    });
     if let Some(context) = app.try_state::<Context>() {
         *lock(&context.last_phase) = Some(payload.clone());
     }
@@ -1103,9 +1112,8 @@ fn emit_phase(app: &AppHandle, phase: &str) {
 /// Push one phase into the loading page. `eval` is a Rust-side API, so the page
 /// needs no IPC permission.
 fn apply_phase(window: &WebviewWindow<Wry>, payload: &serde_json::Value) {
-    let script =
-        r#"(function(){if(!document.body)return;document.body.dataset.phase=__STATE__.phase;})()"#
-            .replace("__STATE__", &payload.to_string());
+    let script = r#"(function(){if(!document.body)return;const s=__STATE__;document.body.dataset.phase=s.phase;const t=document.getElementById('status-text');if(t)t.textContent=s.status;const e=document.getElementById('endpoint');if(e)e.textContent=s.endpoint;const steps=document.querySelectorAll('[data-step]');for(let i=0;i<steps.length;i++){if(steps[i].dataset.step===s.phase)steps[i].setAttribute('aria-current','step');else steps[i].removeAttribute('aria-current');}})()"#
+        .replace("__STATE__", &payload.to_string());
     eval_loading_page(window, &script);
 }
 
@@ -1221,8 +1229,8 @@ fn startup(context: Context, app: AppHandle, receiver: mpsc::Receiver<Command>) 
             Ok(mut backend) => {
                 log(&state_dir, "Config loaded, backend handle ready");
                 let port = backend.port();
-                emit_phase(&app, "environment");
-                emit_phase(&app, "backend");
+                emit_phase(&app, "environment", port);
+                emit_phase(&app, "backend", port);
                 if let Some(server) = launch(&context, &app, &mut backend, port) {
                     started = Some(Running {
                         backend,
@@ -1310,7 +1318,7 @@ fn launch(
     context.stopped.store(false, Ordering::SeqCst);
     context.healthy.store(true, Ordering::SeqCst);
     let generation = context.generation.fetch_add(1, Ordering::SeqCst) + 1;
-    emit_phase(app, "workspace");
+    emit_phase(app, "workspace", port);
 
     let url = match Url::parse(&server.url) {
         Ok(url) => url,

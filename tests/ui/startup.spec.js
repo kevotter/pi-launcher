@@ -2,9 +2,7 @@ import fs from 'node:fs';
 import { test, expect } from '@playwright/test';
 
 // The startup page is the first thing a user sees and the last thing that shows
-// a reason when the backend cannot start. Both are checked here in real Edge:
-// CSP blocks inline scripts, so a future "just paste the snippet" edit would
-// otherwise fail silently and leave a blank window.
+// a reason when the backend cannot start. Both are checked here in real Edge.
 
 // The webview applies `app.security.csp` from tauri.conf.json as a response
 // header *on top of* the page's meta tag, and the two are intersected. A
@@ -27,43 +25,37 @@ async function openStartup(page) {
   return errors;
 }
 
-test('startup screen animates without sound, CSP errors or page errors', async ({ page }) => {
+test('startup screen shows progress without media, CSP errors or page errors', async ({ page }) => {
   const errors = await openStartup(page);
   const state = await page.evaluate(() => ({
+    cards: document.querySelectorAll('.card').length,
+    spinners: document.querySelectorAll('.spinner').length,
     tracks: document.querySelectorAll('.track').length,
-    letters: document.querySelectorAll('.jumper span').length,
+    steps: document.querySelectorAll('[data-step]').length,
+    statusText: document.getElementById('status-text').textContent,
+    endpoint: document.getElementById('endpoint').textContent,
     media: document.querySelectorAll('audio, video').length,
-    statusLine: document.querySelectorAll('.hint, #status-bar, #status-text').length,
-    userSelect: getComputedStyle(document.body).userSelect,
     scrolls: document.documentElement.scrollHeight > innerHeight
       || document.documentElement.scrollWidth > innerWidth,
     csp: window.__csp,
-    // The embedded subset must win over whatever serif the machine happens to
-    // have, so both weights are checked as loaded rather than merely declared.
-    embedded: [...document.fonts].map(face => `${face.family} ${face.weight} ${face.status}`).sort(),
-    boldUsable: document.fonts.check('700 40px "Ciallo Serif"'),
-    heavyUsable: document.fonts.check('800 40px "Ciallo Serif"'),
-    boardFamily: getComputedStyle(document.querySelector('.ciallo')).fontFamily,
   }));
-  expect(state.tracks).toBe(17);
-  expect(state.letters).toBe(16);
+  expect(state.cards).toBe(1);
+  expect(state.spinners).toBe(1);
+  expect(state.tracks).toBe(1);
+  expect(state.steps).toBe(3);
+  // The first phase is painted by Rust, so the markup ships the same wording
+  // instead of an empty line that only looks right in the app.
+  expect(state.statusText).toBe('正在检查运行环境');
+  expect(state.endpoint).toBe('127.0.0.1');
   expect(state.media).toBe(0);
-  // The animation is the only progress signal; a status pill broke the picture.
-  expect(state.statusLine).toBe(0);
-  expect(state.userSelect).toBe('none');
   expect(state.scrolls).toBe(false);
   expect(state.csp).toEqual([]);
-  expect(state.embedded).toEqual(['Ciallo Serif 700 loaded', 'Ciallo Serif 800 loaded']);
-  expect(state.boldUsable).toBe(true);
-  expect(state.heavyUsable).toBe(true);
-  expect(state.boardFamily.startsWith('"Ciallo Serif"')).toBe(true);
   expect(errors).toEqual([]);
 });
 
 // Everything the page needs must survive the *shipped* header policy, not just
-// the meta tag a browser preview obeys. Serving the same build with that header
-// reproduced a real regression: fonts were blocked only in the installed app.
-test('the packaged header policy still permits the fonts and styles it ships', async ({ page }) => {
+// the meta tag a browser preview obeys.
+test('the packaged header policy still permits what the page ships', async ({ page }) => {
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.addInitScript(() => {
@@ -86,74 +78,60 @@ test('the packaged header policy still permits the fonts and styles it ships', a
   await page.evaluate(() => document.fonts.ready);
   const state = await page.evaluate(() => ({
     csp: window.__csp,
-    embedded: [...document.fonts].map(face => `${face.family} ${face.weight} ${face.status}`).sort(),
-    boldUsable: document.fonts.check('700 40px "Ciallo Serif"'),
-    heavyUsable: document.fonts.check('800 40px "Ciallo Serif"'),
+    // A blocked image or webfont shows up as a zero-width load, not an error.
+    iconLoaded: [...document.images].every(image => image.naturalWidth > 0),
   }));
   expect(state.csp).toEqual([]);
-  expect(state.embedded).toEqual(['Ciallo Serif 700 loaded', 'Ciallo Serif 800 loaded']);
-  expect(state.boldUsable).toBe(true);
-  expect(state.heavyUsable).toBe(true);
+  expect(state.iconLoaded).toBe(true);
   expect(errors).toEqual([]);
 });
 
-test('a click does nothing and selects no text; phases only set an attribute', async ({ page }) => {
+test('apply_phase writes the status line, endpoint and current step', async ({ page }) => {
   await openStartup(page);
-  const before = await page.evaluate(() => document.body.childElementCount);
-  await page.mouse.click(180, 300);
-  await page.mouse.dblclick(220, 340);
-  expect(await page.evaluate(() => document.body.childElementCount)).toBe(before);
-  expect(await page.locator('.float, #floats').count()).toBe(0);
-  expect(await page.evaluate(() => window.getSelection().toString())).toBe('');
-
-  // What `apply_phase` evaluates: the phase attribute alone.
-  await page.evaluate(() => { document.body.dataset.phase = 'backend'; });
-  await expect(page.locator('body')).toHaveAttribute('data-phase', 'backend');
-  await expect(page.locator('.failure')).toBeHidden();
-});
-
-test('the context menu and middle-click autoscroll stay suppressed', async ({ page }) => {
-  await openStartup(page);
-  // Registered after the page's own listener, so it observes the final
-  // `defaultPrevented` value rather than the state before it ran.
+  // The same payload and script `emit_phase`/`apply_phase` evaluate.
   await page.evaluate(() => {
-    window.__ctx = null;
-    document.addEventListener('contextmenu', event => { window.__ctx = event.defaultPrevented; });
+    const state = { phase: 'backend', status: '正在连接本地服务', endpoint: '127.0.0.1:30141' };
+    document.body.dataset.phase = state.phase;
+    document.getElementById('status-text').textContent = state.status;
+    document.getElementById('endpoint').textContent = state.endpoint;
+    const steps = document.querySelectorAll('[data-step]');
+    for (const step of steps) {
+      if (step.dataset.step === state.phase) step.setAttribute('aria-current', 'step');
+      else step.removeAttribute('aria-current');
+    }
   });
-
-  // This window is an application, not a page: right-click must not open a
-  // menu, and middle-click must not start Chromium's autoscroll.
-  await page.mouse.click(240, 380, { button: 'right' });
-  expect(await page.evaluate(() => window.__ctx)).toBe(true);
-
-  await page.mouse.click(320, 420, { button: 'middle' });
-  expect(await page.evaluate(() => window.getSelection().toString())).toBe('');
-  expect(await page.locator('.float, #floats').count()).toBe(0);
+  await expect(page.locator('#status-text')).toHaveText('正在连接本地服务');
+  await expect(page.locator('#endpoint')).toHaveText('127.0.0.1:30141');
+  await expect(page.locator('body')).toHaveAttribute('data-phase', 'backend');
+  await expect(page.locator('[data-step="backend"]')).toHaveAttribute('aria-current', 'step');
+  await expect(page.locator('[data-step="environment"]')).not.toHaveAttribute('aria-current', 'step');
+  // Earlier steps read as done rather than current: the dot swaps its number for
+  // a check mark, which is the only thing the CSS keys on.
+  expect(await page.locator('[data-step="environment"] .step-dot').evaluate(node => getComputedStyle(node, '::after').content)).toContain('✓');
 });
 
-test('the failure state keeps the reason readable over the animation', async ({ page }) => {
+test('the failure state stops the spinner and keeps the reason readable', async ({ page }) => {
   await openStartup(page);
   // What `apply_error` evaluates.
   await page.evaluate(() => {
+    const state = {
+      message: 'Pi Web 意外退出：code=1\n\n日志：C:\\Temp\\launcher.log',
+      heading: '启动失败',
+      hint: '请检查配置或日志后重试。',
+    };
     document.body.dataset.phase = 'failed';
-    document.getElementById('heading').textContent = '启动失败';
-    document.querySelector('.subtitle').textContent = '请检查配置或日志后重试。';
+    document.getElementById('heading').textContent = state.heading;
+    document.querySelector('.subtitle').textContent = state.hint;
     const box = document.getElementById('error-box');
-    box.textContent = 'Pi Web 意外退出：code=1\n\n日志：C:\\Temp\\launcher.log';
+    box.textContent = state.message;
     box.hidden = false;
   });
-  await expect(page.locator('.failure')).toBeVisible();
   await expect(page.locator('#heading')).toHaveText('启动失败');
   await expect(page.locator('#error-box')).toContainText('launcher.log');
-  await expect(page.locator('.stage')).toBeHidden();
-  // The only surface where selecting text is intentional (copying the log path).
-  expect(await page.locator('#error-box').evaluate(node => getComputedStyle(node).userSelect)).toBe('text');
-  // ...and the only surface that keeps its context menu: the log path has to be
-  // copyable here, everywhere else the window suppresses it.
-  await page.evaluate(() => {
-    window.__ctxOnFailure = null;
-    document.addEventListener('contextmenu', event => { window.__ctxOnFailure = event.defaultPrevented; });
-  });
-  await page.click('#error-box', { button: 'right' });
-  expect(await page.evaluate(() => window.__ctxOnFailure)).toBe(false);
+  // Nothing keeps implying progress once the start has failed.
+  await expect(page.locator('.status')).toBeHidden();
+  await expect(page.locator('.track')).toBeHidden();
+  await expect(page.locator('.steps')).toBeHidden();
+  // The log path has to stay copyable: this card never disables selection.
+  expect(await page.locator('#error-box').evaluate(node => getComputedStyle(node).userSelect)).not.toBe('none');
 });

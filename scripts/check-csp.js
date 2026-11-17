@@ -2,8 +2,7 @@
 // each page, and the header derived from `app.security.csp` in tauri.conf.json.
 // The webview intersects them, so a directive that is only in the meta tag is
 // not merely redundant — it is blocked, and only inside an installed build where
-// no browser preview will show it. That is how the embedded fonts shipped
-// broken while every local test passed.
+// no browser preview will show it.
 //
 // The header policy is application-wide, the meta tags are per page, so the rule
 // is one-directional: the header must permit everything every page declares.

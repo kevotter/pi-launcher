@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3 — Plain startup screen, no embedded font
+
+- Restore the startup screen that 0.1.2 replaced: the card, the spinner, the indeterminate progress bar and the three-step list are back, and Rust fills the status line, the loopback address and the current step again through the same `eval` phases (no IPC permission). A startup failure stops the spinner, the bar and the step list instead of leaving them implying progress.
+- Drop the Ciallo animation and the embedded serif subset with it: `ui/fonts/`, `scripts/build-startup-font.py` and the Vite licence block are gone, the page ships no webfont, and `app.security.csp` no longer declares `font-src`. Font attribution is removed from README, `THIRD_PARTY_NOTICES.md`, the maintenance notes and the generated frontend licence bundle.
+- The context menu and middle-click suppression that came with the animation go with it; the window behaves like the 0.1.1 startup card again.
+- Edge specs cover the restored card, the phase payload and the failure layout.
+
 ## 0.1.2 — Window memory, silent login start, recoverable backend
 
 **升级方式**：从 0.1.x（Tauri 版）直接覆盖安装，不需要卸载；只有旧 Electron 客户端仍需先手动卸载。

@@ -27,7 +27,7 @@
 
 ## Architecture and change boundaries
 
-- Windows Tauri 2 / Rust launcher and system WebView2. `ui/` contains a static startup page (Ciallo animation, silent, no IPC) and the Vue 3/PrimeVue tray; Vite builds both to ignored `.build/ui/`. No Electron runtime or CDN dependencies.
+- Windows Tauri 2 / Rust launcher and system WebView2. `ui/` contains a static startup card (status line, three-step progress, silent, no IPC) and the Vue 3/PrimeVue tray; Vite builds both to ignored `.build/ui/`. No Electron runtime or CDN dependencies.
 - Application identity: Pi Launcher, `local.pi.launcher`, data directory `Pi Launcher`, launcher environment prefix `PI_LAUNCHER_`.
 - Keep startup separate from backend installation/updates. Never silently download, replace or select another backend. No automatic old-Electron-installer upgrade; Tauri 0.1.x → newer is a plain installer upgrade in place, without uninstalling or deleting data.
 - Login startup registers `"<exe>" --tray` (silent, tray only). The argument-less form written by 0.1.x must stay recognised as enabled and removable, including in the NSIS pre-uninstall hook.
@@ -51,5 +51,5 @@
 - Record actual commands/outcomes in the task report, not README. Do not invent success rates or claim CI ran merely because YAML exists.
 - Build backend artifacts into fresh directories, never overwrite running installations or delete failure-recovery artifacts automatically.
 - Synchronize package.json, npm lock root versions, Cargo package/lock entry and explicit Tauri version; version checks must not rewrite Cargo.lock.
-- Two CSPs apply at once: the page's meta tag and `app.security.csp` in `tauri.conf.json`, which the webview sends as a header after install and intersects with the meta tag. A directive present only in the meta tag is blocked in the packaged build while every browser preview stays green — that is how the embedded font shipped broken. The config is application-wide and must permit every page's declarations; `scripts/check-csp.js` enforces it in `npm test`, and the Edge specs re-render both pages under that header.
+- Two CSPs apply at once: the page's meta tag and `app.security.csp` in `tauri.conf.json`, which the webview sends as a header after install and intersects with the meta tag. A directive present only in the meta tag is blocked in the packaged build while every browser preview stays green. The config is application-wide and must permit every page's declarations; `scripts/check-csp.js` enforces it in `npm test`, and the Edge specs re-render both pages under that header.
 - Clean Rust build output with `cargo clean` (add `--manifest-path src-tauri/Cargo.toml`). Never recursively delete inside `src-tauri/target`: those deletions land in the user's Recycle Bin. The same applies to `.build/` and any other generated directory — move stray files out instead of deleting them wholesale.
