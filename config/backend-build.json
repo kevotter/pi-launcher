@@ -1,5 +1,5 @@
 {
-  "repository": "https://github.com/notakevz/pi-web.git",
+  "repository": "https://github.com/kevotter/pi-web.git",
   "source": "../pi-web",
   "output": "release/backend",
   "commit": "HEAD",

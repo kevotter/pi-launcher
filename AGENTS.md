@@ -4,7 +4,7 @@
 
 ## 先阅读
 
-1. [README.md](README.md)：用户流程及 **0.1.0 手动迁移要求**。
+1. [README.md](README.md)：用户流程及 **升级/迁移要求**。
 2. [config/README.md](config/README.md)：配置字段、覆盖优先级与示例。
 3. [docs/ai-maintenance.md](docs/ai-maintenance.md)：开发、测试及证据边界。
 4. [docs/releasing.md](docs/releasing.md)：构建与发布操作，涉及打包时必读。
@@ -12,9 +12,10 @@
 ## 帮用户部署
 
 - 先检查环境与现有服务，不照搬路径。安装版需要 Windows 10/11 x64、原生 Node.js >=22.19、WebView2 Runtime；源码还需 Rust stable >=1.90、MSVC C++ Build Tools、Windows SDK 和 Git。
+- **升级 0.1.x（Tauri 版）：直接覆盖安装，不需要卸载**；先退出正在运行的实例（含托盘）。配置、`.pi` 凭据/会话、窗口状态、自启设置保留，不要为此删除数据目录。
 - **从旧 Electron 安装版迁移：先退出所有旧 Pi Launcher（含托盘），手动卸载 OLD 安装器/客户端，再装新 Tauri 版。无旧安装器自动升级，不同时运行两个客户端。**
 - 保留 `%APPDATA%\Pi Launcher` 配置及 `.pi` 凭据/会话（包括自定义目录），不通过删除数据来迁移。Electron browser local storage/profile 不保证迁移到 WebView2，不承诺免登录或保留页面偏好。
-- 没有 fork 需求时推荐 npm `@agegr/pi-web`；用 `npm root -g` 找实际包目录。fork 使用 `notakevz/pi-web` 的 `local/customizations`，先确认版本，再手动构建到新目录；不擅自换成上游。
+- 没有 fork 需求时推荐 npm `@agegr/pi-web`；用 `npm root -g` 找实际包目录。fork 使用 `kevotter/pi-web` 的 `local/customizations`，先确认版本，再手动构建到新目录；不擅自换成上游。
 - Pi CLI 可选。Web 已依赖 Pi SDK，不无条件安装 CLI，也不把 CLI 的 `--ignore-scripts` 照搬给 Web。
 - 个人设置写 `%APPDATA%\Pi Launcher\launcher-config.json` 或 `PI_LAUNCHER_DATA_DIR`，已有配置先读比较，覆盖前获准。不要把本机路径、密钥、代理账号写进源码。
 - `backendPath` 指向 npm 包根目录或完整 fork 运行产物，不是 checkout、npm root 或 CLI 文件；`cwd` 必须存在。专用 `PI_LAUNCHER_` 环境变量覆盖 JSON。
@@ -28,7 +29,7 @@
 
 - Windows Tauri 2 / Rust launcher and system WebView2. `ui/` contains a static startup page (Ciallo animation, silent, no IPC) and the Vue 3/PrimeVue tray; Vite builds both to ignored `.build/ui/`. No Electron runtime or CDN dependencies.
 - Application identity: Pi Launcher, `local.pi.launcher`, data directory `Pi Launcher`, launcher environment prefix `PI_LAUNCHER_`.
-- Keep startup separate from backend installation/updates. Never silently download, replace or select another backend. No automatic old-installer upgrade.
+- Keep startup separate from backend installation/updates. Never silently download, replace or select another backend. No automatic old-Electron-installer upgrade; Tauri 0.1.x → newer is a plain installer upgrade in place, without uninstalling or deleting data.
 - Login startup registers `"<exe>" --tray` (silent, tray only). The argument-less form written by 0.1.x must stay recognised as enabled and removable, including in the NSIS pre-uninstall hook.
 - A backend that exits unexpectedly or fails to start is reported, never fatal to the launcher: the bundled page and the tray show the reason, and only an explicit tray restart stops the launcher-owned instance (never an adopted external one) before starting a new one.
 - Remembered window geometry/zoom is disposable UI state in `window.json`: ignore a corrupt file instead of repairing it, and clamp a restore into a current monitor work area.
@@ -38,7 +39,7 @@
 - Preserve third-party attribution and packaged `LICENSE` / `THIRD_PARTY_NOTICES.md` resources. Do not reintroduce Electron to keep obsolete tests passing.
 - Never commit credentials, sessions, logs, backend artifacts, browser profiles, caches or real user configuration. Do not log secrets.
 - Never stop an external backend by guessing; verify identity and ownership before stopping a launcher-owned process.
-- Build Windows is manual-only, fixed-SHA, read-only. Publishing is opt-in in a separate `contents: write` job, bound to built SHA/checksums, refusing existing tags/releases and failing closed on API errors.
+- Build Windows is manual-only, fixed-SHA, read-only. Publishing is opt-in in a separate `contents: write` job, bound to built SHA/checksums, refusing existing tags/releases and failing closed on API errors. Release notes are the `- ` bullets of the `## <version>` CHANGELOG section; a version without that section fails the release instead of shipping stale notes.
 - Keep backend/release scripts minimal CommonJS with Node built-ins. Frontend uses the approved Vue 3/PrimeVue/Vite stack; keep its ESM configs separate and avoid unrelated frameworks.
 
 ## Verification rules

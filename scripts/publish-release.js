@@ -5,6 +5,23 @@ const crypto = require("node:crypto")
 
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
 const CHECKSUM_FILE = "SHA256SUMS.txt"
+const CHANGELOG = path.join(__dirname, "..", "CHANGELOG.md")
+
+// Release notes are the changelog section for this exact version. A version
+// without its own section fails here instead of publishing stale or empty
+// notes, which is how the previous hard-coded summary outlived its release.
+async function readReleaseNotes(version, file = CHANGELOG) {
+  const lines = (await fs.readFile(file, "utf8")).replace(/^\uFEFF/, "").split(/\r?\n/)
+  const start = lines.findIndex(line => {
+    const heading = /^##\s+(\S+)/.exec(line)
+    return Boolean(heading) && heading[1] === version
+  })
+  if (start < 0) throw new Error(`CHANGELOG has no "## ${version}" section`)
+  const end = lines.findIndex((line, index) => index > start && /^##\s/.test(line))
+  const notes = lines.slice(start + 1, end < 0 ? lines.length : end).filter(line => /^-\s+\S/.test(line))
+  if (!notes.length) throw new Error(`CHANGELOG section "## ${version}" has no entries`)
+  return notes.join("\n")
+}
 
 async function readArtifacts(directory) {
   if (!(await fs.lstat(directory)).isDirectory()) throw new Error("Artifact directory must be a regular directory, not a symlink")
@@ -47,7 +64,7 @@ async function requireMissing(read, description) {
   throw new Error(`${description} already exists; refusing to overwrite or reuse it`)
 }
 
-async function publishRelease({ github, context, core, directory, version }) {
+async function publishRelease({ github, context, core, directory, version, changelog = CHANGELOG }) {
   const match = typeof version === "string" && version.length <= 200 && VERSION.exec(version)
   if (!match || match[0] !== version || /\.lock$/i.test(version) || (match[4] && match[4].split(".").some(part => /^0\d+$/.test(part)))) {
     throw new Error("Invalid release version; expected x.y.z with optional prerelease/build metadata")
@@ -58,6 +75,9 @@ async function publishRelease({ github, context, core, directory, version }) {
     throw new Error("Release requires a repository and Actions run ID")
   }
   const tag = `v${version}`
+  // Both are local reads, so a missing changelog entry or an invalid manifest
+  // still fails before the first API call.
+  const notes = await readReleaseNotes(version, changelog)
   const artifacts = await readArtifacts(directory)
   const repository = { owner, repo }
   // getReleaseByTag cannot rule out an untagged draft. Inspect every release page.
@@ -72,16 +92,20 @@ async function publishRelease({ github, context, core, directory, version }) {
   const server = (context.serverUrl || "https://github.com").replace(/\/$/, "")
   const project = `${server}/${owner}/${repo}`
   const body = [
-    "## 必须先手动卸载旧版 / REQUIRED migration from the old Electron installer/client",
-    "**请先退出所有旧 Pi Launcher（含托盘），手动卸载旧安装器/客户端，然后再安装新的 Tauri 版。旧安装器不会自动升级，禁止同时运行两个版本。**",
-    "保留 `%APPDATA%\\Pi Launcher` 配置（尤其 `launcher-config.json`）和 `.pi` 凭据/会话（含自定义目录），卸载时不要清空数据。Electron 浏览器 local storage/profile 不保证迁移到 WebView2，页面偏好或浏览器登录状态可能需要重新设置。",
+    "## 升级 / Upgrading",
+    "**从 0.1.x（Tauri 版）升级：不需要卸载，直接运行新的安装器覆盖安装。** 安装前先退出正在运行的 Pi Launcher（含托盘）。配置 `%APPDATA%\\Pi Launcher`（尤其 `launcher-config.json`）、`.pi` 凭据/会话、窗口位置和开机自启设置都会保留。",
+    "**从旧 Electron 客户端迁移：仍需先手动卸载旧客户端，再安装本版。** 旧安装器不会自动升级，禁止两个版本同时运行；Electron 浏览器 local storage/profile 不保证迁移到 WebView2，页面偏好和浏览器登录状态可能需要重设。",
+    "两种情况都不要删除 `%APPDATA%\\Pi Launcher` 与 `.pi` 数据目录（含自定义目录）。",
     "",
-    "**Exit ALL old Pi Launcher instances (including the tray), manually uninstall the OLD installer/client, THEN install this new Tauri version. There is NO automatic upgrade from the old installer. Do not run both clients together.**",
-    "Preserve `%APPDATA%\\Pi Launcher` (especially `launcher-config.json`) and your `.pi` credentials/sessions (or custom Pi data directory). Do not delete these directories during uninstall.",
-    "Electron browser local storage/profile is NOT promised to migrate to WebView2; browser-only preferences or sign-in state may need to be set again.",
+    "**Upgrading from a 0.1.x Tauri build needs no uninstall: run the new installer over it, after quitting the running launcher (including the tray).** Configuration, `.pi` credentials/sessions, remembered window state and the login-startup setting are kept.",
+    "**Coming from the old Electron client still requires a manual uninstall first.** The old installer does not auto-upgrade and both clients must not run together; Electron browser local storage/profile is not promised to migrate to WebView2.",
+    "Neither case should delete `%APPDATA%\\Pi Launcher` or the `.pi` data directory (including a custom one).",
     "",
-    "## Windows x64 — Tauri 2 / WebView2",
-    "托盘菜单移除缩放控件，收紧底部留白；‘开机自启’改为右侧开关，无小字说明。",
+    "## 本次更新 / What's changed",
+    "",
+    notes,
+    "",
+    "## 安装说明 / Install notes",
     "开机自启默认关闭，仅在你主动开启时注册当前用户的登录启动项；此前主动开启的设置会保留，不需要管理员权限。Windows 设置或组织策略仍可能另行禁用它。",
     "",
     "Unsigned Windows x64 installer. Windows SmartScreen may show a warning.",
@@ -120,4 +144,4 @@ async function publishRelease({ github, context, core, directory, version }) {
   return published
 }
 
-module.exports = { publishRelease }
+module.exports = { publishRelease, readReleaseNotes }

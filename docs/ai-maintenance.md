@@ -25,7 +25,7 @@
 | `scripts/windows-test-imports.mjs` / `windows-test-loader.mjs` | fork 构建测试的 Windows ESM 绝对路径适配 |
 | `scripts/check-version.js` | 比较 package、npm lock、Cargo package/lock、Tauri 显式版本，只读 |
 | `scripts/stage-installer.js` | 默认在 Tauri 原生 bundle/nsis 目录生成校验和，不复制 EXE；仅 CI 显式指定 runner 临时目录时准备 ASCII 发布附件 |
-| `scripts/publish-release.js` | 附件白名单、哈希、固定 SHA、拒绝已有版本、草稿上传后公开 |
+| `scripts/publish-release.js` | 附件白名单、哈希、固定 SHA、拒绝已有版本、草稿上传后公开；Release notes 取自 CHANGELOG 目标版本小节，缺小节即失败 |
 
 原 Electron `src/`、`assets/`、Electron 构建依赖/配置和相关 JS 运行时测试已移除。
 不保留 Electron 作为兼容运行时，也不把旧测试改名后当作 Tauri 覆盖。
@@ -130,8 +130,8 @@ Next 构建与测试使用隔离 Pi 数据/构建 profile，不碰真实凭据/�
   每次启动尝试都重新读取 `launcher-config.json`（换来新的 `PiBackend`），所以改配置后重启即可生效，包括端口和后端目录。
   重启前先递增 generation 并停掉自有实例（`ServerInfo.owned` 为 false 的外部服务不动），
   避免把主动停止当成崩溃，也避免双实例抢端口。探活每 15 秒一次，连续两次失败才降级为“无响应”。
-- 0.1.0 无旧安装器自动升级。必须先退出所有旧实例、手动卸载旧客户端，再装新版；保留配置和 `.pi` 数据。
-  不承诺 Electron browser local storage、profile、页面偏好或浏览器登录状态迁移。
+- 0.1.x（Tauri 版）升级直接覆盖安装，不需要卸载；配置、`.pi` 凭据/会话、`window.json` 和自启设置保留。
+  只有旧 Electron 客户端（0.1.0 之前）仍需先退出所有实例、手动卸载再装新版，且不承诺 Electron browser local storage、profile、页面偏好或浏览器登录状态迁移。
 - 启动错误看活动数据目录的 `launcher.log`。日志带相对时间；后端输出以 `[pi-web]` 标记。
   `Health check` 的 HTTP 次数和耗时用于区分 Node 启动、端口监听和 Next 首次路由加载；不硬编码开发机测量值。
 - 开机自启仅使用 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的本产品值，正确引用当前 EXE 路径；不修改 HKLM、StartupApproved 或系统策略。写入的是 `"<exe>" --tray`（登录后静默进托盘），但必须继续把旧的无参数写法认作“已启用”并可关闭，卸载 hook 也要删两种写法。界面显示登记状态，Windows 仍可能另行禁用该启动项。默认不自动写入，读写失败必须显示且不能假报成功；不要覆盖其他路径的冲突项。

@@ -3,19 +3,21 @@
 面向维护者/AI。先读 [AGENTS](../AGENTS.md) 和 [维护说明](ai-maintenance.md)。
 普通用户安装见 [README](../README.md)。以下是待执行清单，不是新安装器已通过验收的声明。
 
-## 必须置顶的旧版迁移要求
+## 必须置顶的升级说明
 
-**无旧 Electron 安装器自动升级。先退出所有旧 Pi Launcher（包括托盘），手动卸载 OLD 安装器/客户端，然后安装新的 Tauri 版。禁止两个客户端同时运行。**
+**从 0.1.x（Tauri 版）升级：直接运行新安装器覆盖安装，不需要卸载。** 先退出正在运行的 Pi Launcher（含托盘）。配置、`.pi` 凭据/会话、窗口状态与自启设置保留；安装器同 appId，覆盖安装即升级。
 
-**保留 `%APPDATA%\Pi Launcher` 配置（尤其 `launcher-config.json`）及 `.pi` 凭据和会话，包括自定义数据目录。不要在卸载时清空数据。**
-Electron browser local storage/profile 不保证迁移到 WebView2，不能承诺页面偏好、浏览器登录状态自动保留。
-以上要求必须保留在 README、CHANGELOG 和自动生成的 Release body 顶部；`test-release-unit.js` 对发布文案作断言。
+**从旧 Electron 客户端（0.1.0 之前）迁移：仍需手动卸载。** 无旧安装器自动升级，禁止两个客户端同时运行；Electron browser local storage/profile 不保证迁移到 WebView2，不能承诺页面偏好、浏览器登录状态自动保留。
+
+两种路径都**不要删除 `%APPDATA%\Pi Launcher` 配置（尤其 `launcher-config.json`）和 `.pi` 数据目录（含自定义目录）**。
+以上要求必须保留在 README、CHANGELOG 和自动生成的 Release body 顶部；Release notes 由 `publish-release.js` 从 CHANGELOG 对应版本小节生成，缺小节直接失败，`test-release-unit.js` 对文案与小节来源作断言。
 
 ## 1. 源码与工具检查
 
 - [ ] 源码无个人配置、凭据、会话、日志、后端产物、浏览器 profile、缓存或真实用户路径。
 - [ ] `LICENSE`、图标署名、`THIRD_PARTY_NOTICES.md` 保留；Tauri bundle 携带主许可、第三方通知、`LICENSE-TAURI-MIT` 和生成的 `THIRD_PARTY_FRONTEND_LICENSES.txt`。
 - [ ] package、npm lock 两个根版本、Cargo package/lock 中本包版本、Tauri 显式版本全部为目标版本；不要无故重写 Cargo.lock。
+- [ ] CHANGELOG 有 `## <目标版本>` 小节且至少一条 `- ` 条目（Release body 直接由它生成，缺失即发布失败）。
 - [ ] 原生 Windows 10/11 x64；Node >=22.19、npm、Git、Rust stable >=1.90、MSVC C++ Build Tools / Windows SDK、WebView2 Runtime。
 - [ ] 仓库/终端网络正确，不关闭 TLS，不提交本机 Cargo 镜像或代理认证。
 
@@ -132,7 +134,7 @@ push/PR 执行 Windows Node 工具检查及 Rust fmt/test/clippy，Node 22 缓�
 3. 从该 SHA 的 package version 生成 `v0.1.2`，完整分页查询所有 Release（含未打标签的草稿）。
    已有同名 tag 或 Release 就停止，即使 tag 指向同一 SHA；API 查询失败不当作不存在。
 4. 原子创建指向构建 SHA 的 tag，再建草稿；上传 EXE/校验文件并检查服务端实际文件名一致后才公开。
-   prerelease 标记按版本识别，body 顶部含强制手动卸载/安装及数据保留警告。
+   prerelease 标记按版本识别，body 顶部含 Tauri 版直接覆盖升级、旧 Electron 客户端需手动卸载及数据保留警告；正文 notes 取自 CHANGELOG 该版本小节。
 5. 任一步失败保留 tag/草稿供人工检查，不自动删除、复用或覆盖；并发发布串行，原子 tag 创建仍是最终防线。
 
 Release 公开附件不受 Actions 的 7 天限制。发布成功只证明上传完成，不替代桌面/安装/卸载验收。

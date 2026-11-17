@@ -2,6 +2,8 @@
 
 ## 0.1.2 — Window memory, silent login start, recoverable backend
 
+**升级方式**：从 0.1.x（Tauri 版）直接覆盖安装，不需要卸载；只有旧 Electron 客户端仍需先手动卸载。
+
 - Remember the main window's position, logical size, maximized state and zoom in `window.json`; restore by clamping into a current work area so an unplugged or rearranged display cannot leave the window off-screen.
 - Register login startup as `"<exe>" --tray` so a login launch goes to the tray without opening a window. The argument-less form written by 0.1.x is still recognised and removable, and the NSIS pre-uninstall hook deletes either spelling of this installation's entry only.
 - Keep the launcher running when the backend exits unexpectedly or fails to start: the main window returns to the bundled page with the exit code and log path, the tray reports 已停止, and a new 重启本地服务 action stops only the launcher-owned instance before starting a fresh one (so a configuration change no longer needs a full restart).
@@ -29,7 +31,7 @@ These are source changes; Windows tray appearance and installer acceptance still
 
 ## 0.1.0 — Tauri / WebView2 migration
 
-### 必须手动卸载旧客户端 / REQUIRED migration
+### 必须手动卸载旧 Electron 客户端 / REQUIRED migration from the old Electron client
 
 **先退出所有旧 Pi Launcher（包括托盘），手动卸载旧安装器安装的客户端，再安装新版。保留启动器配置和 Pi 凭据、会话；不自动迁移 Electron 浏览器数据。**
 

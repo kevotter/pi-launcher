@@ -483,7 +483,7 @@ mod tests {
 
     #[test]
     fn absolute_paths_only() {
-        assert!(is_absolute_path(r"C:\Users\moza"));
+        assert!(is_absolute_path(r"C:\Users\example"));
         assert!(is_absolute_path(r"\\server\share"));
         assert!(!is_absolute_path("backend"));
         assert!(!is_absolute_path(""));

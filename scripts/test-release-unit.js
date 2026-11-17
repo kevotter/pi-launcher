@@ -6,7 +6,7 @@ const path = require("node:path")
 const crypto = require("node:crypto")
 const { spawnSync } = require("node:child_process")
 const { test } = require("node:test")
-const { publishRelease } = require("./publish-release")
+const { publishRelease, readReleaseNotes } = require("./publish-release")
 
 const sha256 = data => crypto.createHash("sha256").update(data).digest("hex")
 const apiError = status => Object.assign(new Error(status ? `HTTP ${status}` : "Network unavailable"), status ? { status } : {})
@@ -14,7 +14,31 @@ const methods = ["listReleases", "getRef", "createRef", "createRelease", "upload
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-release-unit-"))
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  // Release notes live outside the artifact directory: that directory only
+  // accepts EXEs and SHA256SUMS.txt.
+  const notes = fs.mkdtempSync(path.join(os.tmpdir(), "pi-release-notes-"))
+  t.after(() => {
+    fs.rmSync(directory, { recursive: true, force: true })
+    fs.rmSync(notes, { recursive: true, force: true })
+  })
+  const changelog = path.join(notes, "CHANGELOG.md")
+  fs.writeFileSync(changelog, [
+    "# Changelog",
+    "",
+    "## Unreleased",
+    "",
+    "- Unreleased work that is not in this build",
+    "",
+    "## 0.0.1 — Fixture release",
+    "",
+    "- Fixture bullet one",
+    "- Fixture bullet two",
+    "",
+    "## 0.0.0 — Older release",
+    "",
+    "- Older bullet",
+    "",
+  ].join("\n"))
   const files = {
     "pi-launcher-0.0.1-x64-setup.exe": Buffer.from([0x4d, 0x5a, 0x00, 0xff]),
     "portable.exe": Buffer.from("second mock EXE, never executed"),
@@ -43,7 +67,7 @@ function fixture(t) {
     }
   }
   const options = {
-    github: { rest }, directory, version: "0.0.1",
+    github: { rest }, directory, version: "0.0.1", changelog,
     context: { repo: { owner: "example", repo: "launcher" }, sha: "0123456789abcdef0123456789abcdef01234567", runId: 456, serverUrl: "https://github.com" },
     core: { warning: message => warnings.push(message), setOutput: (...args) => outputs.push(args) },
   }
@@ -86,6 +110,32 @@ test("Tauri release staging has a stable ASCII installer name and synchronized v
   assert.equal(require("./check-version").checkVersion(), pkg.version)
 })
 
+test("release notes are exactly this version's changelog bullets", async t => {
+  const f = fixture(t)
+  assert.equal(await readReleaseNotes("0.0.1", f.options.changelog), "- Fixture bullet one\n- Fixture bullet two")
+  for (const missing of ["0.0.2", "0.0", "0.0.1-rc.1"]) {
+    await assert.rejects(readReleaseNotes(missing, f.options.changelog), new RegExp(`has no "## ${missing.replace(/\./g, "\\.")}" section`))
+  }
+  const prose = path.join(path.dirname(f.options.changelog), "PROSE.md")
+  fs.writeFileSync(prose, "## 1.0.0 — Only prose\n\nNo bullets here.\n")
+  await assert.rejects(readReleaseNotes("1.0.0", prose), /has no entries/)
+})
+
+test("the real changelog covers the current package version", async () => {
+  const pkg = require("../package.json")
+  const notes = await readReleaseNotes(pkg.version)
+  assert.match(notes, /^- \S/m, "the current version needs release notes in CHANGELOG.md")
+  assert.ok(!notes.includes("## "), "notes must stay the bullets of that one section")
+})
+
+test("a version missing from the changelog stops before any API call", async t => {
+  const f = fixture(t)
+  f.options.version = "0.0.2"
+  await assert.rejects(publishRelease(f.options), /has no "## 0\.0\.2" section/)
+  assert.deepEqual(f.calls, [])
+  assert.deepEqual(f.outputs, [])
+})
+
 test("validates CRLF checksums, atomically tags the source SHA, uploads buffers, then publishes", async t => {
   const f = fixture(t)
   const published = await publishRelease(f.options)
@@ -101,20 +151,24 @@ test("validates CRLF checksums, atomically tags the source SHA, uploads buffers,
   assert.equal(draft.name, "Pi Launcher v0.0.1")
   assert.equal(draft.draft, true)
   assert.equal(draft.prerelease, false)
-  assert.ok(draft.body.startsWith("## 必须先手动卸载旧版 / REQUIRED migration"))
-  assert.match(draft.body, /先退出所有旧 Pi Launcher.*手动卸载旧安装器\/客户端.*再安装新的 Tauri/)
+  assert.ok(draft.body.startsWith("## 升级 / Upgrading"))
+  assert.match(draft.body, /从 0\.1\.x（Tauri 版）升级：不需要卸载/)
+  assert.match(draft.body, /直接运行新的安装器覆盖安装/)
+  assert.match(draft.body, /窗口位置和开机自启设置都会保留/)
+  assert.match(draft.body, /从旧 Electron 客户端迁移：仍需先手动卸载旧客户端/)
   assert.match(draft.body, /旧安装器不会自动升级/)
-  assert.match(draft.body, /保留.*launcher-config\.json.*\.pi.*凭据\/会话/)
-  assert.match(draft.body, /Electron 浏览器 local storage\/profile 不保证迁移/)
-  assert.match(draft.body, /Exit ALL old Pi Launcher instances/)
-  assert.match(draft.body, /manually uninstall the OLD installer\/client, THEN install/)
-  assert.match(draft.body, /NO automatic upgrade/)
+  assert.match(draft.body, /两种情况都不要删除/)
+  assert.match(draft.body, /Upgrading from a 0\.1\.x Tauri build needs no uninstall/)
+  assert.match(draft.body, /Coming from the old Electron client still requires a manual uninstall/)
+  assert.match(draft.body, /Electron browser local storage\/profile is not promised to migrate/)
   assert.ok(draft.body.includes("%APPDATA%\\Pi Launcher"))
-  assert.match(draft.body, /Preserve.*launcher-config\.json.*\.pi.*credentials\/sessions/)
-  assert.match(draft.body, /Electron browser local storage\/profile is NOT promised to migrate/)
+  assert.match(draft.body, /## 本次更新 \/ What's changed/)
+  assert.ok(draft.body.includes("- Fixture bullet one"))
+  assert.ok(draft.body.includes("- Fixture bullet two"))
+  assert.ok(!draft.body.includes("Unreleased work"), "notes must not leak the Unreleased section")
+  assert.ok(!draft.body.includes("- Older bullet"), "notes must stop at the next heading")
   assert.match(draft.body, /Unsigned Windows x64/)
   assert.match(draft.body, /开机自启默认关闭/)
-  assert.match(draft.body, /右侧开关/)
   assert.match(draft.body, /Node\.js >=22\.19.*external Pi Web/)
   assert.match(draft.body, /not Windows GUI, installation or uninstallation acceptance/)
   assert.ok(draft.body.includes(`/commit/${f.options.context.sha}`))
@@ -353,6 +407,9 @@ test("SemVer prerelease detection ignores build metadata, and LF/BOM checksums a
     await t.test(version, async t => {
       const f = fixture(t)
       f.options.version = version
+      const notes = path.join(path.dirname(f.options.changelog), `${version}.md`)
+      fs.writeFileSync(notes, `## ${version} — Fixture\n\n- Bullet for ${version}\n`)
+      f.options.changelog = notes
       fs.writeFileSync(path.join(f.options.directory, "SHA256SUMS.txt"), "\uFEFF" + f.checksum.replace(/\r\n/g, "\n"))
       await publishRelease(f.options)
       const draft = f.calls.find(call => call.method === "createRelease").args

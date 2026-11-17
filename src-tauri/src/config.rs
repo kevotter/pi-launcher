@@ -224,7 +224,7 @@ mod tests {
         assert!(validate_proxy_url(None).is_ok());
         // Empty string is the explicit "do not use a proxy" value.
         assert!(validate_proxy_url(Some("")).is_ok());
-        assert!(validate_proxy_url(Some("http://127.0.0.1:10808")).is_ok());
+        assert!(validate_proxy_url(Some("http://127.0.0.1:8080")).is_ok());
         assert!(validate_proxy_url(Some("https://proxy.example:8443")).is_ok());
         assert!(validate_proxy_url(Some("http://proxy.example:8080/")).is_ok());
         // Credentials are allowed; the launcher never logs the value.
@@ -237,7 +237,7 @@ mod tests {
         assert!(validate_proxy_url(Some("http://")).is_err());
         assert!(validate_proxy_url(Some("http://proxy:8080/path")).is_err());
         assert!(validate_proxy_url(Some("http://proxy?x=1")).is_err());
-        assert!(validate_proxy_url(Some("127.0.0.1:10808")).is_err());
+        assert!(validate_proxy_url(Some("127.0.0.1:8080")).is_err());
         assert!(validate_proxy_url(Some("http://@")).is_err());
         for value in [
             "http://:8080",

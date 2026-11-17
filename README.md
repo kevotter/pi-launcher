@@ -1,6 +1,6 @@
 # Pi Launcher
 
-[GitHub](https://github.com/notakevz/pi-launcher) · [MIT](LICENSE)
+[GitHub](https://github.com/kevotter/pi-launcher) · [MIT](LICENSE)
 
 Pi Web 的 Windows 启动器（Tauri 2 + WebView2）。它负责启动和管理 Pi Web 后端进程，用独立窗口显示页面；关窗后留在托盘，点托盘图标可以唤回。
 
@@ -10,9 +10,11 @@ Pi Web 的 Windows 启动器（Tauri 2 + WebView2）。它负责启动和管理 
 
 ## 安装
 
-从 [Releases](https://github.com/notakevz/pi-launcher/releases) 下 `pi-launcher-*-x64-setup.exe` 安装。安装包未签名，Windows 可能显示 SmartScreen 提醒，确认下载来源后再选择继续运行。
+从 [Releases](https://github.com/kevotter/pi-launcher/releases) 下 `pi-launcher-*-x64-setup.exe` 安装。安装包未签名，Windows 可能显示 SmartScreen 提醒，确认下载来源后再选择继续运行。
 
-从旧 Electron 版迁移时，先结束任务，从托盘退出所有旧 Pi Launcher，再手动卸载旧客户端，最后安装新版；不要同时运行两个版本。**卸载时保留启动器配置及 `.pi` 凭据、会话，包括自定义目录中的数据。**旧配置可以继续用，但网页登录状态和页面偏好不保证迁移，可能需要重设。
+**升级**：已经在用 0.1.x（Tauri 版）时直接运行新安装包覆盖安装，先退出正在运行的 Pi Launcher（含托盘），不需要卸载。配置、`.pi` 凭据和会话、窗口位置、开机自启设置都会保留。
+
+从更早的 Electron 版迁移时，先结束任务，从托盘退出所有旧 Pi Launcher，再手动卸载旧客户端，最后安装新版；不要同时运行两个版本。旧配置可以继续用，但网页登录状态和页面偏好不保证迁移，可能需要重设。两种情况都**不要删除 `%APPDATA%\Pi Launcher` 和 `.pi` 数据目录（包括自定义目录）**。
 
 环境要求：
 
@@ -33,7 +35,7 @@ npm install -g @agegr/pi-web
 npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 ```
 
-### fork 版（notakevz/pi-web）
+### fork 版（kevotter/pi-web）
 
 **以下内容可以全部交给AI帮忙处理**
 
@@ -47,8 +49,8 @@ $env:HTTPS_PROXY = 'http://127.0.0.1:8080'
 
 ```powershell
 mkdir pi-web-build -Force | Out-Null; cd pi-web-build
-git clone --depth=1 https://github.com/notakevz/pi-launcher.git
-git clone --depth=1 --branch local/customizations https://github.com/notakevz/pi-web.git
+git clone --depth=1 https://github.com/kevotter/pi-launcher.git
+git clone --depth=1 --branch local/customizations https://github.com/kevotter/pi-web.git
 cd pi-launcher
 npm run build:source
 ```
@@ -68,7 +70,7 @@ npm run backend:verify -- release/backend
 - `Output already exists`：构建不覆盖旧目录，也不要直接删除可能正在使用的后端。改用 `npm run build:source -- --output release/backend-next`，输出到一个尚不存在的新目录；验证和配置路径也相应换成新目录。
 - `Source checkout has local changes`：先用 `git -C ../pi-web status` 查看改动，提交或另行保存自己的修改后再构建。
 - `requires Windows Node.js >=22.19` 或 `Backend builds require Node.js >=22.19`：PATH 里找不到 `node.exe`（WSL 里的 node 不算），或者版本低于 22.19。
-- `Source origin is not the configured repository`：`pi-web` 不是从 notakevz/pi-web 克隆的。换了路径用 `--source`，换了仓库用 `--repository`。
+- `Source origin is not the configured repository`：`pi-web` 不是从 kevotter/pi-web 克隆的。换了路径用 `--source`，换了仓库用 `--repository`。
 - `spawnSync git ENOENT`：当前窗口的 PATH 里没有 git。刚装完 Git 的话关掉窗口重开再试。
 
 `release/backend` 是个整体，包含自己的 `node_modules`，拷到别处或换机器时整个目录一起带走。启动器读的是这个目录，不是 `pi-web` 源码目录。
@@ -159,6 +161,6 @@ Get-Content -LiteralPath $file
 
 ## 相关项目与许可
 
-- [Pi Web](https://github.com/agegr/pi-web) · [Pi](https://github.com/earendil-works/pi) · [notakevz/pi-web](https://github.com/notakevz/pi-web)
+- [Pi Web](https://github.com/agegr/pi-web) · [Pi](https://github.com/earendil-works/pi) · [kevotter/pi-web](https://github.com/kevotter/pi-web)
 
 本项目不是上游官方客户端，代码和文档用 [MIT 许可证](LICENSE)。应用图标是 [Pi 项目](https://github.com/earendil-works/pi) 的 logo（MIT），署名见 [第三方许可说明](THIRD_PARTY_NOTICES.md)。

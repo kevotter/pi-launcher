@@ -23,8 +23,8 @@ function deliveryFixture(t) {
 
 test("build origin normalization accepts explicit HTTPS/git@ repositories without echoing secrets", () => {
   assert.equal(REPOSITORY, require("../config/backend-build.json").repository)
-  assert.equal(normalizeRepository("https://github.com/notakevz/pi-web"), "https://github.com/notakevz/pi-web.git")
-  assert.equal(normalizeRepository("git@github.com:notakevz/pi-web.git"), normalizeRepository(REPOSITORY))
+  assert.equal(normalizeRepository("https://github.com/kevotter/pi-web"), "https://github.com/kevotter/pi-web.git")
+  assert.equal(normalizeRepository("git@github.com:kevotter/pi-web.git"), normalizeRepository(REPOSITORY))
   assert.equal(normalizeRepository("git@example.org:team/custom.git"), "https://example.org/team/custom.git")
   for (const origin of ["local/path", "file:///tmp/repo", "http://example.org/repo", "https://user:private-password@example.org/repo", "https://example.org/repo?token=secret"]) {
     assert.throws(() => normalizeRepository(origin), error => /HTTPS URL or git@/.test(error.message) && !error.message.includes("private-password"))
