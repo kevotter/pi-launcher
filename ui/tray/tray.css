@@ -55,14 +55,23 @@ body {
 }
 /* No shrinking: this is also the independently measurable natural-height box. */
 .tray-content { display: flow-root; }
-.tray-head { display: flex; align-items: center; gap: 8px; padding: 5px 9px; }
+/* Wraps the badge onto its own line instead of squeezing the title: at large
+   Windows text scaling the name must stay whole, and the status must stay
+   visible. The title never shrinks, so ellipsis is only a last resort. */
+.tray-head {
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: 6px 9px; padding: 9px 9px 8px;
+}
 .tray-head img { flex: none; }
-.head-text { min-width: 0; }
-.tray-head h1 { margin: 0; font-size: 1.04rem; font-weight: 650; letter-spacing: -.2px; line-height: 1.35; }
+.head-text { flex: 0 0 auto; min-width: 0; max-width: 100%; }
+.tray-head h1 {
+  margin: 0; font-size: 1.27rem; font-weight: 650; letter-spacing: -.35px; line-height: 1.25;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .status-tag {
   display: inline-flex; align-items: center; gap: 5px; flex: none; margin-left: auto;
-  padding: 4px 7px; border-radius: 99px; background: var(--tray-hover);
-  color: var(--tray-muted); font-size: .81rem; font-weight: 550; line-height: 1.2; white-space: nowrap;
+  padding: 4px 8px; border-radius: 99px; background: var(--tray-hover);
+  color: var(--tray-muted); font-size: .85rem; font-weight: 550; line-height: 1.2; white-space: nowrap;
 }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .status-tag[data-status="running"] { color: var(--tray-ok); background: color-mix(in srgb, var(--tray-ok) 12%, transparent); }
