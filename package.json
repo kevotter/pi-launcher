@@ -19,7 +19,7 @@
     "build:ui": "vite build",
     "preview:ui": "vite preview",
     "test": "npm run test:tools && npm run test:ui",
-    "test:tools": "node --test scripts/test-release-unit.js scripts/test-backend-tools.js scripts/test-version-unit.js scripts/test-stage-unit.js",
+    "test:tools": "node --test scripts/test-release-unit.js scripts/test-backend-tools.js scripts/test-version-unit.js scripts/test-stage-unit.js scripts/test-csp-unit.js",
     "test:ui": "vitest run",
     "test:ui:layout": "playwright test",
     "check:syntax": "node scripts/check-syntax.js",

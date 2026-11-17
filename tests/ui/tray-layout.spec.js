@@ -1,4 +1,32 @@
+import fs from 'node:fs';
 import { test, expect } from '@playwright/test';
+
+// The installed app is also served the header from `app.security.csp`, and the
+// webview intersects it with the page's meta tag. A directive only in the meta
+// tag is blocked in the packaged build while every preview stays green.
+const HEADER_CSP = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8')).app.security.csp;
+
+test('the shipped header policy does not block the tray icon, styles or script', async ({ page }, info) => {
+  await page.route('**/*', async route => {
+    if (route.request().resourceType() !== 'document') return route.continue();
+    const response = await route.fetch();
+    await route.fulfill({ response, headers: { ...response.headers(), 'content-security-policy': HEADER_CSP } });
+  });
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await openTray(page, info.project.name);
+  const state = await page.evaluate(() => ({
+    csp: window.__cspErrors,
+    icon: document.querySelector('.tray-head img')?.naturalWidth ?? 0,
+    styled: getComputedStyle(document.querySelector('.tray-card')).borderRadius,
+  }));
+  expect(state.csp).toEqual([]);
+  // naturalWidth stays 0 when the image request is refused, which is how a
+  // missing img-src shows up: a blank square rather than an error.
+  expect(state.icon).toBeGreaterThan(0);
+  expect(state.styled).not.toBe('0px');
+  expect(errors).toEqual([]);
+});
 
 async function openTray(page, projectName, maxHeight = 900) {
   await page.addInitScript(({ maxHeight }) => {

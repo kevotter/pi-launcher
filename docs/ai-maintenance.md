@@ -121,7 +121,27 @@ Next 构建与测试使用隔离 Pi 数据/构建 profile，不碰真实凭据/�
 - Rust 管理配置、进程与窗口；加载页/托盘不应暴露 Tauri IPC 给远程 Pi Web。Vue 通过受限 `window.open` 信号握手和上报尺寸，尺寸只在本地 tray webview 处理，并限制范围；不开启远程 IPC 或开发服务器来源。
   `withGlobalTauri` 关闭、capabilities 保持最小；远程页面 CSP 由后端响应决定。
 - 启动页是纯静态的 Ciallo 动画（`ui/index.html` + `ui/loading.js`）：CSP 只允许同源脚本，所以脚本不得内联；不放声音，不开启文本选中（错误框是唯一例外，便于复制日志）。
+  页面不响应任何点击（不生成元素、不切换状态），只屏蔽右键菜单和中键自动滚动，因为它们属于浏览器行为而不是应用窗口行为。
   动画本身就是进度提示，页面上不再有任何阶段文字；Rust 只用 `eval` 写 `data-phase` 和失败信息（`.failure`），不依赖任何 IPC 权限。窗口底色固定为启动页纸色，不再跟系统主题变化。
+- 启动页字体自带：`ui/fonts/ciallo-{700,800}.woff2` 是**思源宋体**（Source Han Serif SC，Adobe，
+  Copyright 2017-2022 Adobe，保留字体名 "Source"，SIL OFL 1.1）的子集，只含 `ui/loading.js` 里 `TEXT`
+  用到的字形（16 个码位），两个字重合计约 5 KB，所以没装宋体的机器也长同一个样；
+  系统字体（思源宋体 → SimSun → `serif`）只是兜底。改 `TEXT` 后必须重跑
+  `py -3 scripts/build-startup-font.py`（需要 `fonttools` 与 `brotli`，并从本机已安装的思源宋体读取源文件）。
+  子集属于 OFL 的 Modified Version：家族名改成 `Ciallo Serif`（字体内部 name 表为 `Ciallo Serif SC`）
+  以避开保留字体名，字体内的版权/商标/许可声明逐条保留，不得删除；`ui/fonts/OFL.txt` 由 Vite 并入
+  构建产物的 `THIRD_PARTY_FRONTEND_LICENSES.txt`（同时作为安装资源）。子集**仍受 OFL 约束**，
+  不能纳入本项目的 MIT 许可，随包分发时必须带上许可证。
+  这套信息是用户可见的合规声明，改字体或改生成方式时**必须同步**：`README.md` 的「相关项目与许可」、
+  `THIRD_PARTY_NOTICES.md` 的「Startup page font」、`CHANGELOG.md` 对应条目，以及 `ui/fonts/README.md`。
+  CSP 因此需要 `font-src 'self'`。
+- **CSP 有两份，缺一不可**：页面里的 `<meta http-equiv="Content-Security-Policy">`，和
+  `tauri.conf.json` 的 `app.security.csp`（安装后作为响应头下发）。WebView2 取两者的**交集**，
+  所以某个指令只写在 meta 里等于没写——打包后按配置的 `default-src 'none'` 处理，本地浏览器预览却完全正常。
+  0.1.2 的内嵌字体就是这么在实机上被拦掉的（`font-src` 只加在 meta）。
+  配置是全局的，meta 是逐页的，规则是单向的：**配置必须放行每个页面声明的全部指令与来源**。
+  `scripts/check-csp.js`（`npm test` 内）会比对两者，`tests/ui/*.spec.js` 另外用真实 Edge
+  **把配置当响应头注入**再渲染两个页面，缺指令会以 `securitypolicyviolation` 或 `naturalWidth === 0` 暴露。
 - `%APPDATA%\Pi Launcher`（或 `PI_LAUNCHER_DATA_DIR`）保留配置、日志、进程记录；
   `%LOCALAPPDATA%\Pi Launcher\webview2` 是独立 WebView2 profile，不能共用 Electron profile。
 - `window.json` 只存主窗口几何、最大化与缩放，不含路径或凭据；损坏即忽略并在下次保存时覆盖。

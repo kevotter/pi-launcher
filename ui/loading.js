@@ -1,5 +1,5 @@
-// Startup screen behaviour: the scrolling "Ciallo" boards, the bouncing title,
-// and the text that floats up from wherever the window is clicked.
+// Startup screen behaviour: the scrolling "Ciallo" boards and the bouncing
+// title. Nothing responds to a click — the screen is an animation, not a toy.
 //
 // Kept as a module (not inline) because the page's CSP allows `script-src
 // 'self'` only. No audio: the window appears at login, often before the user is
@@ -89,46 +89,13 @@ window.addEventListener('resize', () => {
   resizeTimer = setTimeout(buildTracks, 180);
 });
 
-/* ---------------- 点击浮起的弹幕 ---------------- */
-const floats = document.getElementById('floats');
-const MAX_FLOATS = 60;
-
-function randColor() {
-  return 'hsl(' + ((Math.random() * 360) | 0) + ' 76% 46%)';
-}
-
-function spawnFloat(x, y) {
-  const span = document.createElement('span');
-  span.className = 'float';
-  span.textContent = TEXT;
-  span.style.left = x + 'px';
-  span.style.top = y + 'px';
-  span.style.color = randColor();
-  span.style.fontSize = (17 + Math.random() * 13).toFixed(1) + 'px';
-  span.style.setProperty('--dx', ((Math.random() * 2 - 1) * 55).toFixed(1) + 'px');
-  span.style.setProperty('--rot', ((Math.random() * 2 - 1) * 7).toFixed(2) + 'deg');
-
-  floats.appendChild(span);
-  span.addEventListener('animationend', () => { span.remove(); }, { once: true });
-
-  // 连点不堆积
-  while (floats.childElementCount > MAX_FLOATS) {
-    floats.firstElementChild.remove();
-  }
-}
-
-// 任意鼠标键都算一次点击：左键、右键、中键一视同仁——这里不是网页，没人指望
-// 右键有菜单。失败面板除外，那是阅读面，不是玩具。
+/* ---------------- 窗口行为 ---------------- */
+// 这里不是网页，没人指望右键有菜单，中键也不该触发 Chromium 的自动滚动。
+// 失败面板除外，那是阅读面，要能右键复制日志路径。
 function isReading(target) {
   return target instanceof Element && target.closest('.failure') !== null;
 }
 
-document.addEventListener('pointerdown', (event) => {
-  if (isReading(event.target)) return;
-  spawnFloat(event.clientX, event.clientY);
-}, { passive: true });
-
-// 右键菜单和中键自动滚动都会打断画面，只有在失败面板上保留（那里要复制日志路径）。
 document.addEventListener('contextmenu', (event) => {
   if (isReading(event.target)) return;
   event.preventDefault();
