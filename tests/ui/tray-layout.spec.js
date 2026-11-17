@@ -7,7 +7,9 @@ async function openTray(page, projectName, maxHeight = 900) {
     document.addEventListener('securitypolicyviolation', event => window.__cspErrors.push(event.violatedDirective));
     let enabled = false;
     const publish = () => window.__setTrayState?.({
-      ready: true, endpoint: '127.0.0.1:30141', version: 'v0.15.0', label: 'Isolated UI fixture',
+      ready: true, starting: false, healthy: true, canRestart: true,
+      endpoint: '127.0.0.1:30141', version: 'v0.15.0', label: 'Isolated UI fixture',
+      startedAt: Date.now() - 90_000,
       autostart: { enabled, error: null }, maxHeight,
     });
     // Only simulate intercepted native signals; never use real Tauri/Run values.
@@ -83,7 +85,7 @@ test('hover, focus and pointer movement never change menu geometry or request na
     sizes: window.__trayActions.filter(value => value.startsWith('resize-')),
   }));
   const before = await snapshot();
-  for (const selector of ['#action-show', '#action-browser', '#action-copy', '#action-config-dir', '#action-log-dir', '.startup-row', '#action-quit']) {
+  for (const selector of ['#action-show', '#action-browser', '#action-copy', '#action-restart', '#action-config-dir', '#action-log-dir', '.startup-row', '#action-quit']) {
     await page.locator(selector).hover();
     await page.evaluate(() => window.__measureTray());
     expect(await snapshot(), `hover ${selector}`).toEqual(before);

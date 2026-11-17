@@ -1,4 +1,4 @@
-# Windows 构建与发布清单（Tauri 0.1.1）
+# Windows 构建与发布清单（Tauri 0.1.2）
 
 面向维护者/AI。先读 [AGENTS](../AGENTS.md) 和 [维护说明](ai-maintenance.md)。
 普通用户安装见 [README](../README.md)。以下是待执行清单，不是新安装器已通过验收的声明。
@@ -88,7 +88,7 @@ Tauri `beforeBuildCommand` 先执行 `npm run build:ui`，Vite 编译两页并�
 
 本地唯一交付目录使用 Tauri 默认的 `src-tauri/target/release/bundle/nsis/`：
 
-- `Pi Launcher_0.1.1_x64-setup.exe`：保留 Tauri 原生文件名，同版本重打包覆盖旧包。
+- `Pi Launcher_0.1.2_x64-setup.exe`：保留 Tauri 原生文件名，同版本重打包覆盖旧包。
 - `SHA256SUMS.txt`：`npm run stage:installer` 原地验证当前版本/架构/产品名、MZ 签名并更新校验和，不复制 EXE、不创建 dist。
 
 仅 GitHub Actions 发布时，显式传入 `--release-output <runner.temp>/pi-launcher-release`，
@@ -108,7 +108,7 @@ Tauri `beforeBuildCommand` 先执行 `npm run build:ui`，Vite 编译两页并�
 
 push/PR 执行 Windows Node 工具检查及 Rust fmt/test/clippy，Node 22 缓存 npm，Rust stable MSVC 与 Cargo cache。
 官方 Actions 已升级为 Node 24 运行时版本；这与项目使用的 Node 22 工具链相互独立。
-检查同时编译 Vue 前端、运行真实组件及独立 Edge 布局测试；不构建安装器，不触发发布，不调用模型。工作流存在不代表检查已执行。
+检查同时编译 Vue 前端、运行真实组件及独立 Edge 的托盘布局与启动页测试；不构建安装器，不触发发布，不调用模型。工作流存在不代表检查已执行。
 
 ### 手动 Build Windows（默认仅附件）
 
@@ -117,7 +117,7 @@ push/PR 执行 Windows Node 工具检查及 Rust fmt/test/clippy，Node 22 缓�
 
 - build job 保持 `contents: read`，检出 `github.sha`，不跟随移动分支头，不持久化 checkout 凭据。
 - Windows runner、Node 22/npm cache、Rust stable >=1.90 MSVC、rustfmt/clippy/Cargo cache。
-- `npm ci`、版本/语法/工具和组件测试、Vite 编译、独立 Edge 布局及 Windows Rust 检查后执行上述 locked NSIS build 与 staging。
+- `npm ci`、版本/语法/工具和组件测试、Vite 编译、独立 Edge 托盘布局与启动页及 Windows Rust 检查后执行上述 locked NSIS build 与 staging。
 - 仅从 runner 临时发布目录上传 ASCII installer EXE 与 SHA256SUMS.txt 为 `pi-launcher-windows-x64`，保留 7 天；
   不上传整个 target、工作区、依赖、调试文件、后端或个人数据。
 - 不配置模型凭据、个人 PAT、代理秘密或签名证书。看到实际日志/附件后才能报告打包成功。
@@ -129,7 +129,7 @@ push/PR 执行 Windows Node 工具检查及 Rust fmt/test/clippy，Node 22 缓�
 
 1. 检出与 build 相同的固定 SHA，下载本次 run 的附件，不重新构建。
 2. `publish-release.js` 校验纯文件/非 symlink、ASCII 白名单与 EXE 哈希，缓存已校验字节后上传。
-3. 从该 SHA 的 package version 生成 `v0.1.1`，完整分页查询所有 Release（含未打标签的草稿）。
+3. 从该 SHA 的 package version 生成 `v0.1.2`，完整分页查询所有 Release（含未打标签的草稿）。
    已有同名 tag 或 Release 就停止，即使 tag 指向同一 SHA；API 查询失败不当作不存在。
 4. 原子创建指向构建 SHA 的 tag，再建草稿；上传 EXE/校验文件并检查服务端实际文件名一致后才公开。
    prerelease 标记按版本识别，body 顶部含强制手动卸载/安装及数据保留警告。

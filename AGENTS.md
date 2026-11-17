@@ -26,9 +26,12 @@
 
 ## Architecture and change boundaries
 
-- Windows Tauri 2 / Rust launcher and system WebView2. `ui/` contains a static loading page and the Vue 3/PrimeVue tray; Vite builds both to ignored `.build/ui/`. No Electron runtime or CDN dependencies.
+- Windows Tauri 2 / Rust launcher and system WebView2. `ui/` contains a static startup page (Ciallo animation, silent, no IPC) and the Vue 3/PrimeVue tray; Vite builds both to ignored `.build/ui/`. No Electron runtime or CDN dependencies.
 - Application identity: Pi Launcher, `local.pi.launcher`, data directory `Pi Launcher`, launcher environment prefix `PI_LAUNCHER_`.
 - Keep startup separate from backend installation/updates. Never silently download, replace or select another backend. No automatic old-installer upgrade.
+- Login startup registers `"<exe>" --tray` (silent, tray only). The argument-less form written by 0.1.x must stay recognised as enabled and removable, including in the NSIS pre-uninstall hook.
+- A backend that exits unexpectedly or fails to start is reported, never fatal to the launcher: the bundled page and the tray show the reason, and only an explicit tray restart stops the launcher-owned instance (never an adopted external one) before starting a new one.
+- Remembered window geometry/zoom is disposable UI state in `window.json`: ignore a corrupt file instead of repairing it, and clamp a restore into a current monitor work area.
 - Do not modify the backend repository as part of launcher changes without separate authorization. Tool modes are backend features, not an OS sandbox.
 - Rust owns configuration, health checks, process ownership, windows and tray. Remote Pi Web must not gain Tauri IPC privileges.
 - `scripts/build-source.js`, `backend-build-tools.js`, `backend-manifest.js`, `windows-test-*.mjs` and `config/backend-build.json` are optional explicit fork build tooling only; never call them during app startup.
@@ -47,3 +50,4 @@
 - Record actual commands/outcomes in the task report, not README. Do not invent success rates or claim CI ran merely because YAML exists.
 - Build backend artifacts into fresh directories, never overwrite running installations or delete failure-recovery artifacts automatically.
 - Synchronize package.json, npm lock root versions, Cargo package/lock entry and explicit Tauri version; version checks must not rewrite Cargo.lock.
+- Clean Rust build output with `cargo clean` (add `--manifest-path src-tauri/Cargo.toml`). Never recursively delete inside `src-tauri/target`: those deletions land in the user's Recycle Bin. The same applies to `.build/` and any other generated directory — move stray files out instead of deleting them wholesale.

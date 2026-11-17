@@ -22,7 +22,10 @@ async function flush() {
   await nextTick();
 }
 async function state(autostart, extra = {}) {
-  window.__setTrayState({ ready: true, endpoint: 'http://127.0.0.1:30141', version: '1.2.3', autostart, ...extra });
+  window.__setTrayState({
+    ready: true, starting: false, healthy: true, canRestart: true,
+    endpoint: 'http://127.0.0.1:30141', version: '1.2.3', autostart, ...extra,
+  });
   await flush();
 }
 function click(detail = 1) {
@@ -52,7 +55,7 @@ afterEach(() => {
 describe('real PrimeVue tray mounted with Vue createApp', () => {
   it('mounts real components, requests replay, and does not mutate a missing/default-false startup registration', async () => {
     expect(root.querySelectorAll('.p-toggleswitch')).toHaveLength(1);
-    expect(root.querySelectorAll('button.p-button')).toHaveLength(6);
+    expect(root.querySelectorAll('button.p-button')).toHaveLength(7);
     expect(root.querySelectorAll('.p-divider')).toHaveLength(3);
     expect(actions()).toContain('ready');
     expect(toggles()).toEqual([]);
@@ -70,8 +73,9 @@ describe('real PrimeVue tray mounted with Vue createApp', () => {
     await state({ enabled: true, error: null });
     expect(input().checked).toBe(true);
     expect(input().getAttribute('aria-checked')).toBe('true');
-    expect(q('#endpoint').textContent).toBe('http://127.0.0.1:30141');
-    expect(q('#version').textContent).toBe('1.2.3');
+    // The address/version row is gone: only the header and the actions remain.
+    expect(root.querySelector('#endpoint')).toBeNull();
+    expect(root.querySelector('#version')).toBeNull();
     expect(q('#badge-text').textContent).toBe('运行中');
   });
 
@@ -156,17 +160,51 @@ describe('real PrimeVue tray mounted with Vue createApp', () => {
     expect(q('#autostart-status').textContent).toContain('无法发送');
   });
 
+  it('reports running, unresponsive, starting and stopped states, with a guarded restart action', async () => {
+    await state({ enabled: false }, { startedAt: Date.now() - 7_995_000 });
+    expect(q('#badge-text').textContent).toBe('运行中');
+    expect(q('#badge').getAttribute('data-status')).toBe('running');
+    // Uptime is a tooltip, not a second header line.
+    expect(q('#badge').title).toBe('本地服务已就绪 · 已运行 2 小时 13 分');
+    expect(root.querySelector('.tray-head p')).toBeNull();
+    expect(q('#action-restart').disabled).toBe(false);
+
+    await state({ enabled: false }, { healthy: false });
+    expect(q('#badge-text').textContent).toBe('无响应');
+    expect(q('#badge').getAttribute('data-status')).toBe('unresponsive');
+    // A stale push must not turn a live backend into "stopped".
+    expect(q('#action-browser').disabled).toBe(false);
+
+    await state({ enabled: false }, {
+      ready: false, starting: true, canRestart: false, endpoint: '', startedAt: null,
+    });
+    expect(q('#badge-text').textContent).toBe('启动中');
+    expect(q('#badge').getAttribute('data-status')).toBe('starting');
+    expect(q('#action-restart').disabled).toBe(true);
+    expect(q('#action-browser').disabled).toBe(true);
+
+    await state({ enabled: false }, {
+      ready: false, starting: false, stopped: true, canRestart: true, endpoint: '',
+    });
+    expect(q('#badge-text').textContent).toBe('已停止');
+    expect(q('#badge').getAttribute('data-status')).toBe('stopped');
+    expect(q('#badge').title).toBe('本地服务未在运行');
+    expect(q('#action-restart').disabled).toBe(false);
+    q('#action-restart').click();
+    expect(actions()).toContain('restart');
+  });
+
   it('retains native tabbable buttons, all original actions, readiness guards and Escape', async () => {
     expect(q('#action-browser').disabled).toBe(true);
     expect(q('#action-copy').disabled).toBe(true);
     await state({ enabled: false });
-    for (const action of ['show', 'browser', 'copy', 'config-dir', 'log-dir', 'quit']) {
+    for (const action of ['show', 'browser', 'copy', 'restart', 'config-dir', 'log-dir', 'quit']) {
       const button = q(`[data-action="${action}"]`);
       expect(button.tagName).toBe('BUTTON');
       expect(button.tabIndex).toBe(0);
       button.click();
     }
-    expect(actions()).toEqual(expect.arrayContaining(['show', 'browser', 'copy', 'config-dir', 'log-dir', 'quit']));
+    expect(actions()).toEqual(expect.arrayContaining(['show', 'browser', 'copy', 'restart', 'config-dir', 'log-dir', 'quit']));
     const escape = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true, bubbles: true });
     document.dispatchEvent(escape);
     expect(escape.defaultPrevented).toBe(true);

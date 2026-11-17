@@ -77,8 +77,13 @@ test("NSIS uses the pinned ownership-safe template, never the default unconditio
   assert.match(template, /!insertmacro NSIS_HOOK_PREUNINSTALL/)
   const hooks = fs.readFileSync(path.join(root, "src-tauri/nsis/hooks.nsh"), "utf8")
   assert.match(hooks, /\$UpdateMode <> 1/)
-  assert.ok(hooks.includes('${If} $R0 == \'$\\"$INSTDIR\\${MAINBINARYNAME}.exe$\\"\''))
-  assert.equal((hooks.match(/DeleteRegValue/g) || []).length, 1)
+  // Both spellings of this installation's entry: the silent `--tray` form this
+  // version writes, and the argument-less form 0.1.x wrote. Anything else,
+  // including another install, must not be touched.
+  const exe = '$\\"$INSTDIR\\${MAINBINARYNAME}.exe$\\"'
+  assert.ok(hooks.includes(`${exe} --tray'`), "silent startup form")
+  assert.ok(hooks.includes(`${exe}'`), "legacy startup form")
+  assert.equal((hooks.match(/DeleteRegValue/g) || []).length, 2)
   const cli = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).devDependencies["@tauri-apps/cli"]
   assert.equal(cli, "2.12.4", "audit the vendored template when upgrading CLI")
 })

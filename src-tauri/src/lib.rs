@@ -11,12 +11,13 @@ mod http;
 mod process;
 mod tray_layout;
 mod util;
+mod window_state;
 
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::webview::{NewWindowResponse, PageLoadEvent};
@@ -31,6 +32,16 @@ use util::{err, lock, log, log_error, resolve_data_dir, APP_NAME};
 
 /// Label of the frameless tray popover window.
 const TRAY_WINDOW: &str = "tray-menu";
+/// Command line switch written into the login-startup registration so a login
+/// launch goes straight to the tray instead of stealing focus.
+pub(crate) const START_HIDDEN_ARG: &str = "--tray";
+/// Bounded wait for a worker to notice an unexpected backend exit.
+const WATCH_INTERVAL: Duration = Duration::from_millis(250);
+/// Liveness probe period and the number of consecutive misses that count as
+/// "running but not answering". One miss is normal while a request saturates
+/// the backend; two turn the tray badge red instead of flapping every minute.
+const HEALTH_INTERVAL: Duration = Duration::from_secs(15);
+const HEALTH_STRIKES: u32 = 2;
 /// How long after opening the popover its own blur is ignored.
 const TRAY_GRACE: Duration = Duration::from_millis(300);
 /// Host used by the popover to signal actions without any Tauri IPC permission.
@@ -174,6 +185,34 @@ fn queue_open(context: &Context, target: OpenTarget) {
     }
 }
 
+/// What the startup thread is asked to do while it waits.
+enum Command {
+    /// Stop the backend (if we own it) and end the process.
+    Quit,
+    /// Stop our backend instance and start a fresh one, then reload the page.
+    Restart,
+}
+
+/// Startup options from the command line.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Options {
+    /// Started by the login-startup entry: create the window but keep it hidden
+    /// so logging in does not open a full-size app window.
+    hidden: bool,
+}
+
+impl Options {
+    fn from_args(args: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            // Unknown arguments are ignored rather than fatal: a stale shortcut
+            // must never turn into "double-clicking does nothing".
+            hidden: args
+                .into_iter()
+                .any(|arg| arg == START_HIDDEN_ARG || arg == "/tray"),
+        }
+    }
+}
+
 #[derive(Clone)]
 struct Context {
     state_dir: Arc<PathBuf>,
@@ -190,14 +229,14 @@ struct Context {
     quitting: Arc<AtomicBool>,
     zoom: Arc<Mutex<f64>>,
     server: Arc<Mutex<Option<ServerInfo>>>,
-    shutdown: Arc<Mutex<Option<mpsc::Sender<()>>>>,
+    shutdown: Arc<Mutex<Option<mpsc::Sender<Command>>>>,
     /// Last phase pushed to the loading page. Replayed on every page load so a
     /// phase emitted before the document was ready is never lost.
     last_phase: Arc<Mutex<Option<serde_json::Value>>>,
     /// Startup error, if any. Kept here (rather than only in the message box)
     /// so the loading page can show it and a late page load cannot overwrite it
     /// with a stale phase.
-    last_error: Arc<Mutex<Option<String>>>,
+    last_error: Arc<Mutex<Option<ErrorReport>>>,
     /// Timestamps used to ignore the blur caused by showing the popover and to
     /// distinguish "click the tray icon again to dismiss" from a fresh open.
     tray_shown_at: Arc<Mutex<Option<Instant>>>,
@@ -205,10 +244,41 @@ struct Context {
     /// Last natural content measurement; None keeps the first opening hidden.
     tray_size: Arc<Mutex<Option<tray_layout::Size>>>,
     tray_open_requested: Arc<AtomicBool>,
+    /// Remembered window geometry and zoom.
+    window: window_state::Store,
+    /// A start attempt is in progress, so "重启" must not queue a second one.
+    starting: Arc<AtomicBool>,
+    /// The backend is gone (crashed or failed to start) but the launcher is
+    /// still alive and can restart it.
+    stopped: Arc<AtomicBool>,
+    /// Bumped for every start attempt. A watcher belongs to one generation, so
+    /// an intentional restart cannot be reported as a crash.
+    generation: Arc<AtomicU64>,
+    /// Last liveness probe result. Only meaningful while `server` is set.
+    healthy: Arc<AtomicBool>,
+    /// Wall-clock start of the current backend, for the tray's uptime line.
+    started_at: Arc<Mutex<Option<SystemTime>>>,
+    /// The remembered window was maximized, but the window was created hidden
+    /// (login launch). Applied the first time it is shown.
+    pending_maximize: Arc<AtomicBool>,
+}
+
+/// A message for the loading page. The heading differs between "cannot start"
+/// and "was running, then exited"; both keep the reason and the log path.
+#[derive(Clone)]
+struct ErrorReport {
+    heading: &'static str,
+    hint: &'static str,
+    message: String,
 }
 
 impl Context {
-    fn new(state_dir: PathBuf, webview_dir: PathBuf) -> Self {
+    fn new(
+        state_dir: PathBuf,
+        webview_dir: PathBuf,
+        window: window_state::Store,
+        zoom: f64,
+    ) -> Self {
         Self {
             opener: start_opener(&state_dir),
             state_dir: Arc::new(state_dir),
@@ -218,7 +288,7 @@ impl Context {
             ))),
             closed: Arc::new(AtomicBool::new(false)),
             quitting: Arc::new(AtomicBool::new(false)),
-            zoom: Arc::new(Mutex::new(1.0)),
+            zoom: Arc::new(Mutex::new(zoom)),
             server: Arc::new(Mutex::new(None)),
             shutdown: Arc::new(Mutex::new(None)),
             last_phase: Arc::new(Mutex::new(None)),
@@ -227,12 +297,20 @@ impl Context {
             tray_hidden_at: Arc::new(Mutex::new(None)),
             tray_size: Arc::new(Mutex::new(None)),
             tray_open_requested: Arc::new(AtomicBool::new(false)),
+            window,
+            starting: Arc::new(AtomicBool::new(false)),
+            stopped: Arc::new(AtomicBool::new(false)),
+            generation: Arc::new(AtomicU64::new(0)),
+            healthy: Arc::new(AtomicBool::new(false)),
+            started_at: Arc::new(Mutex::new(None)),
+            pending_maximize: Arc::new(AtomicBool::new(false)),
         }
     }
 }
 
 pub fn run() {
     util::mark_start();
+    let options = Options::from_args(std::env::args().skip(1));
     let state_dir = match resolve_data_dir() {
         Ok(directory) => directory,
         Err(error) => {
@@ -242,13 +320,24 @@ pub fn run() {
     };
     log(&state_dir, "Launcher starting");
     let webview_dir = util::resolve_webview_dir(&state_dir);
-    let context = Context::new(state_dir.clone(), webview_dir);
+    let (window_store, saved_window) = window_state::Store::open(&state_dir);
+    window_store.spawn_writer();
+    let context = Context::new(
+        state_dir.clone(),
+        webview_dir,
+        window_store,
+        saved_window.map(|saved| saved.zoom).unwrap_or(1.0),
+    );
     let setup_context = context.clone();
 
     let built = tauri::Builder::default()
         // Must be the first plugin registered.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_app_window(app);
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // A silent login launch (`--tray`) must never pull the existing
+            // window to the front; a normal second launch still shows it.
+            if !Options::from_args(args).hidden {
+                show_app_window(app);
+            }
         }))
         // Required for tray-relative positions: on_tray_event stores the icon
         // rect in this plugin's managed state.
@@ -256,6 +345,13 @@ pub fn run() {
         .setup(move |app| {
             app.manage(setup_context.clone());
             log(&setup_context.state_dir, "Setup begin");
+            if options.hidden {
+                log(
+                    &setup_context.state_dir,
+                    "Login-startup launch: window stays hidden",
+                );
+            }
+            let placement = window_state::place(saved_window, &monitors(app));
 
             // Backend first, window second. Creating the WebView2 controller
             // costs well over a second; the startup thread only needs the main
@@ -267,7 +363,7 @@ pub fn run() {
             std::thread::spawn(move || startup(thread_context, handle, receiver));
             log(&setup_context.state_dir, "Startup thread spawned");
 
-            build_window(app, &setup_context)?;
+            build_window(app, &setup_context, placement, options.hidden)?;
             log(&setup_context.state_dir, "Main window created");
 
             build_tray(app)?;
@@ -275,6 +371,14 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
+            // Persist the normal geometry only. A maximized window reports the
+            // maximized rect, and storing that would restore a "normal" window
+            // the size of the screen after the user un-maximizes.
+            WindowEvent::Resized(_) | WindowEvent::Moved(_) if window.label() == "main" => {
+                if let Some(context) = window.app_handle().try_state::<Context>() {
+                    remember_geometry(window, &context);
+                }
+            }
             // Closing the main window hides it; the backend keeps running.
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
@@ -358,33 +462,54 @@ pub fn run() {
     });
 }
 
-/// The loading page's `--canvas` value for the current system theme. Kept in
-/// sync with `ui/index.html` by hand; it is only on screen for a frame or two
-/// before the page paints over it.
+/// The startup page's own paper colour. Kept in sync with `ui/index.html` by
+/// hand; it is only on screen for a frame or two before the page paints over
+/// it, and the page is light in every Windows theme, so this is not themed.
 fn window_background() -> tauri::window::Color {
-    if process::prefers_dark() {
-        tauri::window::Color(0x14, 0x15, 0x18, 0xff)
-    } else {
-        tauri::window::Color(0xf5, 0xf5, 0xf3, 0xff)
-    }
+    tauri::window::Color(0xfd, 0xf3, 0xf1, 0xff)
 }
 
-fn build_window(app: &mut App, context: &Context) -> tauri::Result<()> {
+/// Work areas of every monitor, in physical pixels.
+fn monitors(app: &App) -> Vec<window_state::Monitor> {
+    let Ok(available) = app.available_monitors() else {
+        return Vec::new();
+    };
+    available
+        .into_iter()
+        .filter_map(|monitor| {
+            let area = monitor.work_area();
+            let scale = monitor.scale_factor();
+            (area.size.width > 0 && area.size.height > 0).then_some(window_state::Monitor {
+                left: area.position.x,
+                top: area.position.y,
+                width: area.size.width,
+                height: area.size.height,
+                scale,
+            })
+        })
+        .collect()
+}
+
+fn build_window(
+    app: &mut App,
+    context: &Context,
+    placement: window_state::Placement,
+    hidden: bool,
+) -> tauri::Result<()> {
     let navigation_context = context.clone();
     let new_window_context = context.clone();
     let new_window_handle = app.handle().clone();
     let page_load_context = context.clone();
 
-    WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
+    let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title(APP_NAME)
-        .inner_size(1280.0, 860.0)
+        .inner_size(placement.width, placement.height)
         .min_inner_size(900.0, 600.0)
         // Paint the window in the loading page's own canvas colour. Without
         // this the window shows a plain white surface for the ~1 s WebView2
         // needs to produce its first frame, which reads as a flash in dark mode
         // and as a "the app is broken" blank window in light mode.
         .background_color(window_background())
-        .center()
         // Keep the WebView2 profile out of the roaming tree; it is a cache and
         // is large enough to make profile sync fail.
         .data_directory(context.webview_dir.as_ref().clone())
@@ -414,7 +539,7 @@ fn build_window(app: &mut App, context: &Context) -> tauri::Result<()> {
                 );
                 let error = lock(&page_load_context.last_error).clone();
                 match error {
-                    Some(message) => apply_error(&window, &message),
+                    Some(report) => apply_error(&window, &report),
                     None => {
                         let phase = lock(&page_load_context.last_phase).clone();
                         if let Some(phase) = phase {
@@ -455,7 +580,24 @@ fn build_window(app: &mut App, context: &Context) -> tauri::Result<()> {
             }
             NewWindowResponse::Deny
         })
+        .visible(!hidden)
+        // Leave the placement to `set_position` below: the builder only accepts
+        // logical coordinates, which cannot express a position on a monitor
+        // whose DPI differs from the primary one.
+        .center()
         .build()?;
+    if let Some((x, y)) = placement.position {
+        let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
+    }
+    if placement.maximized {
+        if hidden {
+            // `maximize` shows the window, which would defeat a login launch.
+            // Applied by `show_window` the first time the user asks for it.
+            context.pending_maximize.store(true, Ordering::SeqCst);
+        } else {
+            let _ = window.maximize();
+        }
+    }
     Ok(())
 }
 
@@ -535,23 +677,15 @@ fn update_tray_state(app: &AppHandle) {
     let Some(context) = app.try_state::<Context>() else {
         return;
     };
-    let (ready, endpoint, version, label) = match lock(&context.server).as_ref() {
-        Some(server) => (
-            true,
-            server
-                .url
-                .trim_start_matches("http://")
-                .trim_start_matches("https://")
-                .to_string(),
-            match &server.version {
-                Some(version) => format!("v{version}"),
-                None => "外部服务".to_string(),
-            },
-            server.label.clone().unwrap_or_default(),
-        ),
-        None => (false, "等待连接".to_string(), String::new(), String::new()),
-    };
+    // Only what the popover actually renders. The address and version used to
+    // be pushed for a header row the menu no longer has; copying the address
+    // stays available through the `copy` action.
+    let ready = lock(&context.server).is_some();
     let autostart = lock(&context.autostart).clone();
+    let starting = context.starting.load(Ordering::SeqCst);
+    let started_at = lock(&context.started_at)
+        .and_then(|at| at.duration_since(UNIX_EPOCH).ok())
+        .map(|elapsed| elapsed.as_millis() as u64);
     let max_height = app
         .get_webview_window(TRAY_WINDOW)
         .map(|window| tray_available_size(&window).height)
@@ -560,9 +694,11 @@ fn update_tray_state(app: &AppHandle) {
         "autostart": autostart,
         "maxHeight": max_height,
         "ready": ready,
-        "endpoint": endpoint,
-        "version": version,
-        "label": label,
+        "healthy": context.healthy.load(Ordering::SeqCst),
+        "starting": starting,
+        "stopped": context.stopped.load(Ordering::SeqCst),
+        "startedAt": started_at,
+        "canRestart": !starting && !context.quitting.load(Ordering::SeqCst),
     });
     let script = format!("if (window.__setTrayState) window.__setTrayState({payload});");
     if let Some(window) = app.get_webview_window(TRAY_WINDOW) {
@@ -810,6 +946,7 @@ fn handle_tray_action(app: &AppHandle, context: &Context, action: &str) {
             drop(status);
             update_tray_state(app);
         }
+        "restart" => request_restart(context),
         "quit" => request_quit(context, app),
         "dismiss" => {}
         _ => {}
@@ -833,6 +970,7 @@ fn apply_zoom(app: &AppHandle, context: &Context, action: &str) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.set_zoom(zoom);
     }
+    context.window.record_zoom(zoom);
 }
 
 fn show_app_window(app: &AppHandle) {
@@ -857,11 +995,47 @@ fn wait_for_main_window(app: &AppHandle, timeout: Duration) -> Option<WebviewWin
 }
 
 fn show_window(window: &tauri::WebviewWindow<Wry>) {
+    if let Some(context) = window.app_handle().try_state::<Context>() {
+        // A maximized login-start window was created hidden on purpose; apply
+        // the remembered state now that the user actually asked for it.
+        if context.pending_maximize.swap(false, Ordering::SeqCst) {
+            let _ = window.maximize();
+        }
+    }
     if window.is_minimized().unwrap_or(false) {
         let _ = window.unminimize();
     }
     let _ = window.show();
     let _ = window.set_focus();
+}
+
+/// Debounced by `window_state::Store`; this only copies a few numbers.
+fn remember_geometry(window: &tauri::Window<Wry>, context: &Context) {
+    let maximized = window.is_maximized().unwrap_or(false);
+    context.window.record_maximized(maximized);
+    if maximized {
+        return;
+    }
+    let (Ok(position), Ok(size), Ok(scale)) = (
+        window.outer_position(),
+        window.inner_size(),
+        window.scale_factor(),
+    ) else {
+        return;
+    };
+    if !scale.is_finite() || scale <= 0.0 {
+        return;
+    }
+    // Logical pixels, so the window keeps its perceived size when the saved
+    // position lands on a monitor with a different DPI.
+    let width = (f64::from(size.width) / scale).round();
+    let height = (f64::from(size.height) / scale).round();
+    if !width.is_finite() || !height.is_finite() || width < 1.0 || height < 1.0 {
+        return;
+    }
+    context
+        .window
+        .record_geometry(position.x, position.y, width as u32, height as u32);
 }
 
 fn open_external(url: &str, context: &Context) {
@@ -907,17 +1081,13 @@ fn copy_server_url(app: &AppHandle, context: &Context, url: &str) {
     }
 }
 
-fn emit_phase(app: &AppHandle, phase: &str, port: u16) {
-    let status = match phase {
-        "environment" => "正在检查运行环境",
-        "backend" => "正在连接本地服务",
-        _ => "正在打开工作空间",
-    };
-    let payload = serde_json::json!({
-        "phase": phase,
-        "status": status,
-        "endpoint": format!("127.0.0.1:{port}"),
-    });
+/// Push the current startup phase into the loading page.
+///
+/// The page shows no phase text any more — the animation alone is the progress
+/// signal — but the attribute still drives the failure layout and tells a
+/// reader of the page what is going on.
+fn emit_phase(app: &AppHandle, phase: &str) {
+    let payload = serde_json::json!({ "phase": phase });
     if let Some(context) = app.try_state::<Context>() {
         *lock(&context.last_phase) = Some(payload.clone());
     }
@@ -933,22 +1103,68 @@ fn emit_phase(app: &AppHandle, phase: &str, port: u16) {
 /// Push one phase into the loading page. `eval` is a Rust-side API, so the page
 /// needs no IPC permission.
 fn apply_phase(window: &WebviewWindow<Wry>, payload: &serde_json::Value) {
-    let script = r#"(function(){if(!document.body)return;const s=__STATE__;document.body.dataset.phase=s.phase;const t=document.getElementById('status-text');if(t)t.textContent=s.status;const e=document.getElementById('endpoint');if(e)e.textContent=s.endpoint;const steps=document.querySelectorAll('[data-step]');for(let i=0;i<steps.length;i++){if(steps[i].dataset.step===s.phase)steps[i].setAttribute('aria-current','step');else steps[i].removeAttribute('aria-current');}})()"#
+    let script =
+        r#"(function(){if(!document.body)return;document.body.dataset.phase=__STATE__.phase;})()"#
+            .replace("__STATE__", &payload.to_string());
+    eval_loading_page(window, &script);
+}
+
+/// Render a failure inside the loading page.
+///
+/// The native message box is the primary channel for startup failures, but it
+/// can be refused (locked down desktops) and it disappears as soon as the
+/// process exits. The page keeps the reason and the log path on screen instead
+/// of looping an animation that never explains itself.
+fn apply_error(window: &WebviewWindow<Wry>, report: &ErrorReport) {
+    let payload = serde_json::json!({
+        "message": report.message,
+        "heading": report.heading,
+        "hint": report.hint,
+    });
+    let script = r#"(function(){if(!document.body)return;const s=__STATE__;document.body.dataset.phase='failed';const h=document.getElementById('heading');if(h)h.textContent=s.heading;const p=document.querySelector('.subtitle');if(p)p.textContent=s.hint;const box=document.getElementById('error-box');if(box){box.textContent=s.message;box.hidden=false;}})()"#
         .replace("__STATE__", &payload.to_string());
     eval_loading_page(window, &script);
 }
 
-/// Render a startup failure inside the loading page.
+fn loading_url() -> Option<Url> {
+    let (scheme, host) = internal_origin(cfg!(windows));
+    Url::parse(&format!("{scheme}://{host}/index.html")).ok()
+}
+
+/// Bring the main window back to the bundled loading page.
 ///
-/// The native message box is the primary channel, but it can be refused (locked
-/// down desktops) and it disappears as soon as the process exits. The page keeps
-/// the reason and the log path on screen instead of sitting on "正在连接本地服务"
-/// forever.
-fn apply_error(window: &WebviewWindow<Wry>, message: &str) {
-    let payload = serde_json::json!({ "message": message });
-    let script = r#"(function(){if(!document.body)return;const s=__STATE__;document.body.dataset.phase='failed';const h=document.getElementById('heading');if(h)h.textContent='启动失败';const t=document.getElementById('status-text');if(t)t.textContent='无法启动本地服务';const box=document.getElementById('error-box');if(box){box.textContent=s.message;box.hidden=false;}const bar=document.getElementById('status-bar');if(bar)bar.hidden=true;})()"#
-        .replace("__STATE__", &payload.to_string());
-    eval_loading_page(window, &script);
+/// Used when the backend is gone: showing the dead Pi Web document (or a
+/// browser-style "connection refused" page) is worse than the launcher's own
+/// explanation. `reload` forces a fresh document so stale error markup is not
+/// left behind — a same-URL navigation alone is a reload in WebView2, but the
+/// cache-busting query makes that explicit and keeps the path unchanged.
+fn go_to_loading_page(app: &AppHandle, context: &Context, reload: bool) {
+    let Some(base) = loading_url() else {
+        return;
+    };
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let url = if reload {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_millis())
+            .unwrap_or(0);
+        Url::parse(&format!("{base}?reload={stamp}")).unwrap_or_else(|_| base.clone())
+    } else {
+        base
+    };
+    let already_there = window.url().map(|current| current == url).unwrap_or(false);
+    if already_there {
+        return;
+    }
+    if let Err(error) = window.navigate(url) {
+        log_error(
+            &context.state_dir,
+            "Cannot return to the loading page",
+            &error,
+        );
+    }
 }
 
 /// Check both before scheduling eval and inside the script. Navigation can
@@ -979,43 +1195,142 @@ fn showing_loading_page(window: &WebviewWindow<Wry>) -> bool {
         .unwrap_or(false)
 }
 
-fn startup(context: Context, app: AppHandle, receiver: mpsc::Receiver<()>) {
-    let state_dir = context.state_dir.as_ref().clone();
-    let mut backend = match PiBackend::new(state_dir.clone(), context.closed.clone()) {
-        Ok(backend) => backend,
-        Err(error) => return fatal(&context, &app, &state_dir, &error),
-    };
-    log(&state_dir, "Config loaded, backend handle ready");
-    let port = backend.port();
-    emit_phase(&app, "environment", port);
-    emit_phase(&app, "backend", port);
+/// One successfully started backend plus the handle that owns it.
+struct Running {
+    backend: PiBackend,
+    port: u16,
+    server: ServerInfo,
+}
 
-    let server = match backend.start(port) {
+/// Owns the backend for the life of the process.
+///
+/// The loop exists so a failed start or an unexpected backend exit is
+/// recoverable: the tray can ask for a restart instead of the user closing and
+/// reopening the launcher (which used to be the only way back). A fresh
+/// `PiBackend` is built for every attempt, so a restart also picks up an edited
+/// `launcher-config.json` — including a changed backend path or port.
+fn startup(context: Context, app: AppHandle, receiver: mpsc::Receiver<Command>) {
+    let state_dir = context.state_dir.as_ref().clone();
+    let mut running: Option<Running>;
+
+    loop {
+        context.starting.store(true, Ordering::SeqCst);
+        let mut started = None;
+        let mut failure = None;
+        match PiBackend::new(state_dir.clone(), context.closed.clone()) {
+            Ok(mut backend) => {
+                log(&state_dir, "Config loaded, backend handle ready");
+                let port = backend.port();
+                emit_phase(&app, "environment");
+                emit_phase(&app, "backend");
+                if let Some(server) = launch(&context, &app, &mut backend, port) {
+                    started = Some(Running {
+                        backend,
+                        port,
+                        server,
+                    });
+                }
+            }
+            Err(error) => failure = Some(error),
+        }
+        context.starting.store(false, Ordering::SeqCst);
+        if let Some(error) = failure {
+            if !context.quitting.load(Ordering::SeqCst) {
+                context.stopped.store(true, Ordering::SeqCst);
+                report_start_failure(&context, &app, &state_dir, &error);
+            }
+        }
+        running = started;
+        update_tray_state(&app);
+
+        match receiver.recv() {
+            Ok(Command::Restart) if !context.quitting.load(Ordering::SeqCst) => {
+                // Silence both watchers before stopping: the exit we are about
+                // to cause must not be reported as a crash.
+                context.generation.fetch_add(1, Ordering::SeqCst);
+                if let Some(mut current) = running.take() {
+                    stop_backend(
+                        &mut current.backend,
+                        current.port,
+                        &current.server,
+                        &state_dir,
+                    );
+                }
+                *lock(&context.server) = None;
+                *lock(&context.started_at) = None;
+                *lock(&context.last_error) = None;
+                *lock(&context.last_phase) = None;
+                context.stopped.store(false, Ordering::SeqCst);
+                context.healthy.store(false, Ordering::SeqCst);
+                log(&state_dir, "Restart requested from the tray");
+                go_to_loading_page(&app, &context, true);
+            }
+            _ => break,
+        }
+    }
+
+    if let Some(mut current) = running {
+        stop_backend(
+            &mut current.backend,
+            current.port,
+            &current.server,
+            &state_dir,
+        );
+    }
+    context.window.flush();
+    app.exit(0);
+}
+
+/// One start attempt: spawn/adopt the backend, show it and start its watchers.
+fn launch(
+    context: &Context,
+    app: &AppHandle,
+    backend: &mut PiBackend,
+    port: u16,
+) -> Option<ServerInfo> {
+    let state_dir = context.state_dir.as_ref().clone();
+    let started = backend.start(port);
+
+    let server = match started {
         Ok(server) => server,
         Err(error) => {
-            if context.closed.load(Ordering::SeqCst) {
-                let _ = backend.stop(port, None);
-                app.exit(0);
-                return;
+            if context.quitting.load(Ordering::SeqCst) {
+                log(&state_dir, "Start cancelled: the launcher is quitting");
+                return None;
             }
-            return fatal(&context, &app, &state_dir, &error);
+            context.stopped.store(true, Ordering::SeqCst);
+            report_start_failure(context, app, &state_dir, &error);
+            return None;
         }
     };
+
     *lock(&context.server) = Some(server.clone());
-    emit_phase(&app, "workspace", port);
+    *lock(&context.started_at) = Some(SystemTime::now());
+    *lock(&context.last_error) = None;
+    context.stopped.store(false, Ordering::SeqCst);
+    context.healthy.store(true, Ordering::SeqCst);
+    let generation = context.generation.fetch_add(1, Ordering::SeqCst) + 1;
+    emit_phase(app, "workspace");
 
     let url = match Url::parse(&server.url) {
         Ok(url) => url,
-        Err(error) => return fatal(&context, &app, &state_dir, &error),
+        Err(error) => {
+            fatal(context, app, &state_dir, &error);
+            return None;
+        }
     };
     // The window is built on the main thread right after this thread starts, so
     // it may not exist yet when the backend wins the race.
-    let window = match wait_for_main_window(&app, Duration::from_secs(20)) {
+    let window = match wait_for_main_window(app, Duration::from_secs(20)) {
         Some(window) => window,
-        None => return fatal(&context, &app, &state_dir, &err("主窗口不存在")),
+        None => {
+            fatal(context, app, &state_dir, &err("主窗口不存在"));
+            return None;
+        }
     };
     if let Err(error) = window.navigate(url) {
-        return fatal(&context, &app, &state_dir, &error);
+        fatal(context, app, &state_dir, &error);
+        return None;
     }
 
     log(
@@ -1030,18 +1345,30 @@ fn startup(context: Context, app: AppHandle, receiver: mpsc::Receiver<()>) {
     // Now that the main page is loading, build the tray popover on this
     // (worker) thread and seed it with the current state. Doing it here keeps a
     // second WebView2 controller off the startup critical path.
-    ensure_tray_menu_window(&app);
-    update_tray_state(&app);
+    ensure_tray_menu_window(app);
+    update_tray_state(app);
 
     if backend.spawned() {
-        let child = backend.child_handle();
-        let watch_context = context.clone();
-        let watch_app = app.clone();
-        let watch_dir = state_dir.clone();
-        // The backend keeps owning the `Child`; this thread only polls it. Handing
-        // ownership over (the old `take_child`) left nothing to kill if the
-        // record file disappeared, which leaked the backend *and* the port.
-        std::thread::spawn(move || loop {
+        spawn_child_watcher(context, app, backend.child_handle(), generation);
+    }
+    spawn_health_watcher(context, app, server.url.clone(), generation);
+    Some(server)
+}
+
+/// The backend keeps owning the `Child`; this thread only polls it. Handing
+/// ownership over (the old `take_child`) left nothing to kill if the record
+/// file disappeared, which leaked the backend *and* the port.
+fn spawn_child_watcher(
+    context: &Context,
+    app: &AppHandle,
+    child: Arc<Mutex<Option<std::process::Child>>>,
+    generation: u64,
+) {
+    let worker = context.clone();
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("backend-watch".into())
+        .spawn(move || loop {
             let status = {
                 let mut guard = lock(&child);
                 match guard.as_mut() {
@@ -1050,36 +1377,181 @@ fn startup(context: Context, app: AppHandle, receiver: mpsc::Receiver<()>) {
                 }
             };
             if let Some(status) = status {
-                // `quitting` covers the window between the tray asking to quit
-                // and this thread noticing the exit: without it, a normal quit
-                // could pop a bogus "unexpected exit" dialog that races the
-                // pending `app.exit(0)`.
-                if !watch_context.quitting.load(Ordering::SeqCst) {
-                    let code = status.code().unwrap_or(-1);
-                    fatal(
-                        &watch_context,
-                        &watch_app,
-                        &watch_dir,
-                        &err(format!("Pi Web 意外退出：code={code}")),
-                    );
+                // A restart or quit bumps the generation before it stops the
+                // backend, so only a genuinely unexpected exit gets here.
+                if worker.generation.load(Ordering::SeqCst) == generation
+                    && !worker.quitting.load(Ordering::SeqCst)
+                {
+                    backend_exited(&worker, &app, status.code().unwrap_or(-1));
                 }
                 return;
             }
-            if watch_context.closed.load(Ordering::SeqCst) {
+            if worker.closed.load(Ordering::SeqCst)
+                || worker.generation.load(Ordering::SeqCst) != generation
+            {
                 return;
             }
-            std::thread::sleep(Duration::from_millis(250));
+            std::thread::sleep(WATCH_INTERVAL);
         });
+    if spawned.is_err() {
+        log(
+            &context.state_dir,
+            "Cannot start the backend watcher thread",
+        );
     }
+}
 
-    // Stay alive until the tray asks to quit; then stop only our own backend.
-    let _ = receiver.recv();
-    if server.owned {
-        if let Err(error) = backend.stop(port, server.info.as_ref()) {
-            log_error(&state_dir, "Failed to stop backend", &error);
+/// Liveness probe for "process alive, service not answering".
+fn spawn_health_watcher(context: &Context, app: &AppHandle, url: String, generation: u64) {
+    let worker = context.clone();
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("backend-health".into())
+        .spawn(move || {
+            let mut strikes = 0;
+            loop {
+                std::thread::sleep(HEALTH_INTERVAL);
+                if worker.closed.load(Ordering::SeqCst)
+                    || worker.generation.load(Ordering::SeqCst) != generation
+                {
+                    return;
+                }
+                if !http::check_server(&url, &worker.closed) {
+                    strikes += 1;
+                } else {
+                    strikes = 0;
+                }
+                let healthy = strikes < HEALTH_STRIKES;
+                if worker.healthy.swap(healthy, Ordering::SeqCst) != healthy {
+                    log(
+                        &worker.state_dir,
+                        if healthy {
+                            "Backend answers again"
+                        } else {
+                            "Backend is running but stopped answering"
+                        },
+                    );
+                    update_tray_state(&app);
+                }
+            }
+        });
+    if spawned.is_err() {
+        log(&context.state_dir, "Cannot start the backend health thread");
+    }
+}
+
+/// The backend exited on its own. Keep the launcher alive: the user may want to
+/// read the log, open the config directory, or simply restart.
+fn backend_exited(context: &Context, app: &AppHandle, code: i32) {
+    let state_dir = context.state_dir.as_ref().clone();
+    log(
+        &state_dir,
+        &format!("Pi Web exited unexpectedly: code={code}"),
+    );
+    // Stop the health probe as well: it would keep probing a dead port.
+    context.generation.fetch_add(1, Ordering::SeqCst);
+    *lock(&context.server) = None;
+    *lock(&context.started_at) = None;
+    context.healthy.store(false, Ordering::SeqCst);
+    context.stopped.store(true, Ordering::SeqCst);
+
+    let report = ErrorReport {
+        heading: "本地服务已停止",
+        hint: "可以从托盘菜单重新启动它。",
+        message: format!(
+            "Pi Web 意外退出（code={code}）。\n\n\
+             右键托盘图标，选择“重启本地服务”即可重新启动；也可以退出后查看日志。\n\
+             日志：{}",
+            state_dir.join("launcher.log").display()
+        ),
+    };
+    // Record it first: a page that loads after this point replays it instead of
+    // a stale "正在连接本地服务".
+    *lock(&context.last_error) = Some(report.clone());
+    if let Some(window) = app.get_webview_window("main") {
+        if showing_loading_page(&window) {
+            apply_error(&window, &report);
+        } else {
+            go_to_loading_page(app, context, false);
         }
     }
-    app.exit(0);
+    update_tray_state(app);
+}
+
+/// A start attempt failed. The launcher stays alive so the tray can retry after
+/// the configuration is fixed; only unrecoverable failures call `fatal`.
+fn report_start_failure(context: &Context, app: &AppHandle, state_dir: &Path, error: &dyn Display) {
+    let report = ErrorReport {
+        heading: "无法启动本地服务",
+        hint: "按下方原因检查配置，然后从托盘菜单重试。",
+        message: format!(
+            "{}\n\n\
+             配置：{}\n\
+             日志：{}\n\n\
+             修正后可从托盘菜单“重启本地服务”重试，不必重新打开启动器。",
+            error,
+            state_dir.join("launcher-config.json").display(),
+            state_dir.join("launcher.log").display()
+        ),
+    };
+    log_error(state_dir, "Backend start failed", error);
+    *lock(&context.last_error) = Some(report.clone());
+    *lock(&context.server) = None;
+    *lock(&context.started_at) = None;
+    context.healthy.store(false, Ordering::SeqCst);
+    if let Some(window) = app.get_webview_window("main") {
+        if showing_loading_page(&window) {
+            apply_error(&window, &report);
+        } else {
+            go_to_loading_page(app, context, false);
+        }
+    }
+    update_tray_state(app);
+
+    // A login launch (`--tray`) has no visible window, so the dialog is the
+    // only way the user learns that nothing started.
+    log(state_dir, "Showing startup error dialog");
+    if !process::show_message_box(APP_NAME, &report.message) {
+        log(
+            state_dir,
+            "Windows did not display the error dialog; the window and tray still show it",
+        );
+    }
+}
+
+fn stop_backend(backend: &mut PiBackend, port: u16, server: &ServerInfo, state_dir: &Path) {
+    // An adopted external Pi Web is not ours to stop.
+    if !server.owned {
+        return;
+    }
+    if let Err(error) = backend.stop(port, server.info.as_ref()) {
+        log_error(state_dir, "Failed to stop backend", &error);
+    }
+}
+
+fn request_restart(context: &Context) {
+    if context.quitting.load(Ordering::SeqCst) || context.starting.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let sender = lock(&context.shutdown).clone();
+    match sender {
+        Some(sender) => {
+            if sender.send(Command::Restart).is_err() {
+                context.starting.store(false, Ordering::SeqCst);
+                log(
+                    &context.state_dir,
+                    "Restart request dropped: the startup thread is gone",
+                );
+            }
+        }
+        None => {
+            context.starting.store(false, Ordering::SeqCst);
+            log(
+                &context.state_dir,
+                "Restart request dropped: nothing to restart",
+            );
+        }
+    }
 }
 
 fn request_quit(context: &Context, app: &AppHandle) {
@@ -1089,12 +1561,14 @@ fn request_quit(context: &Context, app: &AppHandle) {
         return;
     }
     context.closed.store(true, Ordering::SeqCst);
+    // Synchronous: the process ends as soon as the startup thread answers.
+    context.window.flush();
     let sender = lock(&context.shutdown).take();
     match sender {
         Some(sender) => {
             // The startup thread is gone once it has failed; then there is
             // nothing to wait for and the send fails immediately.
-            if sender.send(()).is_err() {
+            if sender.send(Command::Quit).is_err() {
                 app.exit(0);
             }
         }
@@ -1103,18 +1577,22 @@ fn request_quit(context: &Context, app: &AppHandle) {
 }
 
 fn fatal(context: &Context, app: &AppHandle, state_dir: &Path, error: &dyn Display) {
-    let message = format!(
-        "{}\n\n日志：{}",
-        error,
-        state_dir.join("launcher.log").display()
-    );
+    let report = ErrorReport {
+        heading: "启动失败",
+        hint: "按下方原因检查配置或环境。",
+        message: format!(
+            "{}\n\n日志：{}",
+            error,
+            state_dir.join("launcher.log").display()
+        ),
+    };
     log_error(state_dir, "Fatal error", error);
     context.closed.store(true, Ordering::SeqCst);
 
     // Record the failure first: a page that loads after this point replays it
-    // (see `on_page_load`) instead of a stale "正在连接本地服务".
+    // instead of a stale "正在连接本地服务".
     if let Some(state) = app.try_state::<Context>() {
-        *lock(&state.last_error) = Some(error.to_string());
+        *lock(&state.last_error) = Some(report.clone());
         // The backend is gone; a stale `server` made the tray keep showing a
         // green "running" dot and offer "copy address"/"open in browser" for a
         // port nothing listens on any more.
@@ -1125,14 +1603,14 @@ fn fatal(context: &Context, app: &AppHandle, state_dir: &Path, error: &dyn Displ
     // writing into the remote Pi Web document would be an intrusion.
     if let Some(window) = app.get_webview_window("main") {
         if showing_loading_page(&window) {
-            apply_error(&window, &error.to_string());
+            apply_error(&window, &report);
             let _ = window.show();
             let _ = window.set_focus();
         }
     }
 
     log(state_dir, "Showing startup error dialog");
-    if process::show_message_box(APP_NAME, &message) {
+    if process::show_message_box(APP_NAME, &report.message) {
         // The user has read the dialog; there is nothing left to keep alive.
         // `app.exit` only queues the shutdown, so returning matters: without it
         // the "did not display" branch below would log a contradiction.
@@ -1155,6 +1633,21 @@ mod navigation_tests {
 
     fn url(value: &str) -> Url {
         Url::parse(value).unwrap()
+    }
+
+    #[test]
+    fn only_an_exact_tray_switch_hides_the_window() {
+        let parse = |args: &[&str]| Options::from_args(args.iter().map(|arg| (*arg).to_string()));
+        assert!(parse(&[START_HIDDEN_ARG]).hidden);
+        assert!(parse(&["/tray"]).hidden);
+        assert!(parse(&["--tray", "--other"]).hidden);
+        assert!(!parse(&[]).hidden);
+        // A stale or mistyped switch must not turn a double-click into nothing.
+        for other in [
+            "--trays", "-tray", "--tray=1", "tray", "--TRAY", "", " --tray",
+        ] {
+            assert!(!parse(&[other]).hidden, "{other:?}");
+        }
     }
 
     #[test]

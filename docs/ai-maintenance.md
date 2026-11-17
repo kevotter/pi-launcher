@@ -14,8 +14,9 @@
 | `vite.config.mjs` / `vitest.config.mjs` | 多页前端构建、完整生产依赖许可收集、jsdom 真实组件测试 |
 | `playwright.config.mjs` / `tests/ui/` | 独立 Edge 布局/交互验证，不运行 Tauri 或真实注册表 |
 | `src-tauri/src/tray_layout.rs` | 严格尺寸信号解析、逻辑像素/DPI 与显示器工作区限幅 |
-| `src-tauri/src/autostart.rs` | 当前用户 Run 启动项读取、显式切换及 mock 回归；不开放远程 IPC |
-| `src-tauri/nsis/hooks.nsh` | 真正卸载时仅删除与本次安装 EXE 命令匹配的启动项，更新时保留 |
+| `src-tauri/src/window_state.rs` | 主窗口位置/逻辑尺寸/最大化/缩放记忆与防抖落盘；恢复时按工作区钳制，损坏文件安全忽略 |
+| `src-tauri/src/autostart.rs` | 当前用户 Run 启动项读取、显式切换及 mock 回归；写入 `--tray` 静默形式，兼容旧的无参数形式；不开放远程 IPC |
+| `src-tauri/nsis/hooks.nsh` | 真正卸载时仅删除与本次安装 EXE 命令匹配的启动项（带/不带 `--tray` 两种写法），更新时保留 |
 | `src-tauri/nsis/installer.nsi` | 固定 CLI 2.12.4 模板，去掉默认无条件 Run 删除逻辑；升级 CLI 时审查模板差异及许可 |
 | `config/launcher-defaults.json` | 内嵌安全默认值，个人设置在应用数据目录 |
 | `scripts/build-source.js` | 可选的、显式手动 fork 构建，输出生产依赖与 source-release.json |
@@ -94,6 +95,8 @@ GitHub push/PR 的 Source checks 在 Windows 执行两层检查，不等于桌�
 
 配置/启动修改应覆盖：环境覆盖优先级、非法类型/路径、代理严格校验与秘密不回显、npm/fork 布局、
 外部健康服务复用、HTTP 总 deadline、响应限长、取消/超时、身份验证、清理失败不误杀等。
+窗口与生命周期修改还应覆盖：损坏/越界 `window.json` 被忽略、跨 DPI 与已拔显示器的工作区钳制、
+重启前先停自有实例且不误报为崩溃、外部（非自有）后端不被停止、探活连续失败才降级。
 Rust fixture 通过也不代表真实 npm 安装、真实模型请求或 Windows 桌面通过。
 
 ## 显式 fork 后端构建
@@ -117,13 +120,21 @@ Next 构建与测试使用隔离 Pi 数据/构建 profile，不碰真实凭据/�
 
 - Rust 管理配置、进程与窗口；加载页/托盘不应暴露 Tauri IPC 给远程 Pi Web。Vue 通过受限 `window.open` 信号握手和上报尺寸，尺寸只在本地 tray webview 处理，并限制范围；不开启远程 IPC 或开发服务器来源。
   `withGlobalTauri` 关闭、capabilities 保持最小；远程页面 CSP 由后端响应决定。
+- 启动页是纯静态的 Ciallo 动画（`ui/index.html` + `ui/loading.js`）：CSP 只允许同源脚本，所以脚本不得内联；不放声音，不开启文本选中（错误框是唯一例外，便于复制日志）。
+  动画本身就是进度提示，页面上不再有任何阶段文字；Rust 只用 `eval` 写 `data-phase` 和失败信息（`.failure`），不依赖任何 IPC 权限。窗口底色固定为启动页纸色，不再跟系统主题变化。
 - `%APPDATA%\Pi Launcher`（或 `PI_LAUNCHER_DATA_DIR`）保留配置、日志、进程记录；
   `%LOCALAPPDATA%\Pi Launcher\webview2` 是独立 WebView2 profile，不能共用 Electron profile。
+- `window.json` 只存主窗口几何、最大化与缩放，不含路径或凭据；损坏即忽略并在下次保存时覆盖。
+  恢复必须落在当前某块显示器的工作区内，且逻辑尺寸不随 DPI 变化。
+- 后端意外退出或启动失败只报告、不退出应用：窗口回到内置页显示原因与日志，托盘保留“重启本地服务”。
+  每次启动尝试都重新读取 `launcher-config.json`（换来新的 `PiBackend`），所以改配置后重启即可生效，包括端口和后端目录。
+  重启前先递增 generation 并停掉自有实例（`ServerInfo.owned` 为 false 的外部服务不动），
+  避免把主动停止当成崩溃，也避免双实例抢端口。探活每 15 秒一次，连续两次失败才降级为“无响应”。
 - 0.1.0 无旧安装器自动升级。必须先退出所有旧实例、手动卸载旧客户端，再装新版；保留配置和 `.pi` 数据。
   不承诺 Electron browser local storage、profile、页面偏好或浏览器登录状态迁移。
 - 启动错误看活动数据目录的 `launcher.log`。日志带相对时间；后端输出以 `[pi-web]` 标记。
   `Health check` 的 HTTP 次数和耗时用于区分 Node 启动、端口监听和 Next 首次路由加载；不硬编码开发机测量值。
-- 开机自启仅使用 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的本产品值，正确引用当前 EXE 路径；不修改 HKLM、StartupApproved 或系统策略。界面显示登记状态，Windows 仍可能另行禁用该启动项。默认不自动写入，读写失败必须显示且不能假报成功；不要覆盖其他路径的冲突项。
+- 开机自启仅使用 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 的本产品值，正确引用当前 EXE 路径；不修改 HKLM、StartupApproved 或系统策略。写入的是 `"<exe>" --tray`（登录后静默进托盘），但必须继续把旧的无参数写法认作“已启用”并可关闭，卸载 hook 也要删两种写法。界面显示登记状态，Windows 仍可能另行禁用该启动项。默认不自动写入，读写失败必须显示且不能假报成功；不要覆盖其他路径的冲突项。
 - 自启状态以注册表为准，不另存 launcher JSON。单测用 mock，不能改真实 Run 启动项；卸载 hook 也只删除与本次安装完整命令匹配的值。必须使用定制 NSIS 模板：默认模板会在 hook 后无条件按产品名删除启动项，不能直接回退。
 - 原生错误框或加载错误页、关闭隐藏、托盘定位/失焦行为需实际桌面观察，不用静态单测替代。
 - 不公开用户日志、凭据、会话、真实路径、代理认证 URL。模型请求须获准。

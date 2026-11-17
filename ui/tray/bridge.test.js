@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createActionSender, createToggleGate, createTrayBridge, measureTray } from './bridge.js';
+import {
+  createActionSender,
+  createToggleGate,
+  createTrayBridge,
+  formatUptime,
+  measureTray,
+} from './bridge.js';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -61,6 +67,24 @@ describe('tray native bridge (no Registry or app processes)', () => {
     now = 1100;
     expect(gate({ detail: 2 })).toBe(false);
     expect(gate({ detail: 1 })).toBe(true);
+  });
+
+  it('formats uptime at minute resolution and rejects unusable timestamps', () => {
+    const start = 1_700_000_000_000;
+    const at = (seconds) => formatUptime(start, start + seconds * 1000);
+    expect(at(0)).toBe('不到 1 分钟');
+    expect(at(59)).toBe('不到 1 分钟');
+    expect(at(60)).toBe('1 分钟');
+    expect(at(59 * 60)).toBe('59 分钟');
+    expect(at(60 * 60)).toBe('1 小时');
+    expect(at(2 * 3600 + 13 * 60)).toBe('2 小时 13 分');
+    expect(at(23 * 3600 + 59 * 60)).toBe('23 小时 59 分');
+    expect(at(24 * 3600)).toBe('1 天 0 小时');
+    expect(at(3 * 86400 + 4 * 3600)).toBe('3 天 4 小时');
+    // Clock skew or a missing field: no label rather than a wrong one.
+    expect(at(-5)).toBe('');
+    expect(formatUptime(undefined, start)).toBe('');
+    expect(formatUptime(start, Number.NaN)).toBe('');
   });
 
   it('ceil-measures the real wrapper border box including padding', () => {

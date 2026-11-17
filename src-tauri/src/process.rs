@@ -30,7 +30,6 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
-use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
 use windows_sys::Win32::System::Threading::{
     GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject,
     PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
@@ -468,33 +467,6 @@ pub(crate) fn set_clipboard(owner: HWND, text: &str) -> bool {
 /// ~0.8 s just to start PowerShell and produced *no dialog at all* on machines
 /// where AppLocker/WDAC puts PowerShell into ConstrainedLanguage mode — the one
 /// situation where the user most needs to be told what went wrong.
-/// Whether Windows is configured for dark app mode.
-///
-/// Used to paint the window (and therefore WebView2's surface before the first
-/// document frame) in the loading page's own background colour, so startup does
-/// not flash white in either theme. Read straight from the registry: a wrong
-/// answer costs one frame of the wrong shade, so a synchronous ~10 µs read is
-/// better value than another dependency or an async theme event.
-pub fn prefers_dark() -> bool {
-    let subkey = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
-    let value = wide("AppsUseLightTheme");
-    let mut light: u32 = 1;
-    let mut size = std::mem::size_of::<u32>() as u32;
-    let status = unsafe {
-        RegGetValueW(
-            HKEY_CURRENT_USER,
-            subkey.as_ptr(),
-            value.as_ptr(),
-            RRF_RT_REG_DWORD,
-            std::ptr::null_mut(),
-            &mut light as *mut u32 as *mut c_void,
-            &mut size,
-        )
-    };
-    // Anything unexpected (missing value, denied key) keeps the light default.
-    status == 0 && light == 0
-}
-
 pub(crate) fn show_message_box(title: &str, message: &str) -> bool {
     let caption = wide(title);
     let body = wide(message);

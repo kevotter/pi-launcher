@@ -1,7 +1,15 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 — Window memory, silent login start, recoverable backend
 
+- Remember the main window's position, logical size, maximized state and zoom in `window.json`; restore by clamping into a current work area so an unplugged or rearranged display cannot leave the window off-screen.
+- Register login startup as `"<exe>" --tray` so a login launch goes to the tray without opening a window. The argument-less form written by 0.1.x is still recognised and removable, and the NSIS pre-uninstall hook deletes either spelling of this installation's entry only.
+- Keep the launcher running when the backend exits unexpectedly or fails to start: the main window returns to the bundled page with the exit code and log path, the tray reports 已停止, and a new 重启本地服务 action stops only the launcher-owned instance before starting a fresh one (so a configuration change no longer needs a full restart).
+- Probe the backend every 15 s; two consecutive misses show 无响应 in the tray instead of a green badge on a hung process.
+- Trim the tray menu to one header line plus the actions: drop the status subtitle and the address/version row. The badge alone reports 启动中/运行中/无响应/已停止, with uptime and the reason in its tooltip; the address stays reachable through 复制 Web 地址.
+- Replace the startup card with the Ciallo animation: full-window scrolling boards, a bouncing title, and a copy that floats up wherever the window is clicked with any mouse button. The context menu and middle-click autoscroll are suppressed, since the window is an application rather than a page. Silent by design, no text selection, and no status line — the animation is the only progress signal. Startup failures still land on the same screen, with the reason and log path kept selectable.
+- Paint the window in the startup page's paper colour in every Windows theme, so the first frame matches the page instead of flashing dark-then-pink. The loading page no longer reports the loopback address or a three-step progress list.
+- Document the remembered window file, the silent login launch, restart and recovery behaviour; extend the Rust, component and Edge layout tests accordingly.
 - Replace the handwritten tray controls with Vue 3, PrimeVue ToggleSwitch/Button/Divider and locally bundled Aura themes using Vite.
 - Measure intrinsic content and resize the native tray window in bounded logical pixels before its first display; respect monitor work areas, fit normal menus without scrollbars, and keep a scrolling fallback for exceptionally small screens or enlarged fonts.
 - Replay native state after Vue mounts. Keep verified startup state and click suppression, including Edge's canceled-checkbox default-action rollback race.

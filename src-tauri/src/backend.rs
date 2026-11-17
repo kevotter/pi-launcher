@@ -36,7 +36,6 @@ pub struct ServerInfo {
     pub owned: bool,
     pub info: Option<ProcessInfo>,
     pub version: Option<String>,
-    pub label: Option<String>,
 }
 
 pub struct PiBackend {
@@ -432,6 +431,13 @@ impl PiBackend {
                 ),
             );
         }
+        // The instance is gone, so `spawned()`/`child_handle()` must stop
+        // describing it. Without this a restart that adopts an external service
+        // would spawn a watcher for the already-dead child and report the newly
+        // adopted server as crashed.
+        self.child_pid = None;
+        self.child_info = None;
+        *crate::util::lock(&self.child) = None;
         Ok(())
     }
 
@@ -539,7 +545,6 @@ impl PiBackend {
                 url,
                 owned: existing.is_some(),
                 version: existing.as_ref().and_then(|v| v.version.clone()),
-                label: existing.as_ref().and_then(|v| v.label.clone()),
                 info: existing,
             });
         }
@@ -742,7 +747,6 @@ impl PiBackend {
                         url,
                         owned: true,
                         version: Some(spec.version.clone()),
-                        label: Some(spec.label.clone()),
                         info: Some(info),
                     });
                 }

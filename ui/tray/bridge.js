@@ -44,6 +44,23 @@ export function measureTray(wrapper, card, content, host = window) {
   };
 }
 
+// Minute resolution on purpose: a seconds counter would change the text — and
+// therefore the measured height — while the popover is open.
+export function formatUptime(startedAt, now = Date.now()) {
+  if (!Number.isFinite(startedAt) || !Number.isFinite(now)) return '';
+  const seconds = Math.floor((now - startedAt) / 1000);
+  if (seconds < 0) return '';
+  if (seconds < 60) return '不到 1 分钟';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    const rest = minutes % 60;
+    return rest ? `${hours} 小时 ${rest} 分` : `${hours} 小时`;
+  }
+  return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时`;
+}
+
 export function createTrayBridge({
   host = window,
   onState,

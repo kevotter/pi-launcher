@@ -16,6 +16,7 @@ defineProps({ name: { type: String, required: true } });
     </template>
     <path v-else-if="name === 'config-dir'" d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
     <path v-else-if="name === 'log-dir'" d="M6 3h9l4 4v14H6zM14 3v5h5M9 12h7M9 16h7" />
+    <path v-else-if="name === 'restart'" d="M20.4 12a8.4 8.4 0 1 1-2.5-5.9M20.4 4.6v4.3h-4.3" />
     <path v-else-if="name === 'autostart'" d="M12 3v9M6.3 5.7a8 8 0 1 0 11.4 0" />
     <path v-else-if="name === 'quit'" d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4M15 8l4 4-4 4M19 12H9" />
     <template v-else>

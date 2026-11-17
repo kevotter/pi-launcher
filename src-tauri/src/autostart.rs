@@ -5,6 +5,8 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use crate::START_HIDDEN_ARG;
+
 const VALUE_NAME: &str = "Pi Launcher";
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const MAX_REG_SZ_UNITS: usize = 32_768;
@@ -50,10 +52,43 @@ fn command_for_exe(path: &Path) -> Result<String> {
     Ok(command)
 }
 
-/// Deliberately exact: an unquoted path, extra arguments, another installation,
-/// environment expansion or a differently spelled path is not ours to delete.
+/// The value written when the user enables startup: silent, straight to tray.
+/// Too little room after a very long path degrades to the plain command rather
+/// than refusing to register at all — a visible window is better than none.
+fn startup_command_for_exe(path: &Path) -> Result<String> {
+    let base = command_for_exe(path)?;
+    let arg = format!(" {START_HIDDEN_ARG}");
+    let units = base.encode_utf16().count() + arg.encode_utf16().count();
+    Ok(if units <= MAX_RUN_COMMAND_UNITS {
+        format!("{base}{arg}")
+    } else {
+        base
+    })
+}
+
+/// Deliberately exact: an unquoted path, another installation, environment
+/// expansion or a differently spelled path is not ours to delete.
+///
+/// The argument-less form is still accepted because it is what 0.1.x wrote;
+/// an entry created before this version must remain switchable and removable.
 fn matches_command(value: &str, command: &str) -> bool {
     value == command
+}
+
+fn accepted_commands(path: &Path) -> Result<Vec<String>> {
+    let base = command_for_exe(path)?;
+    let startup = startup_command_for_exe(path)?;
+    Ok(if startup == base {
+        vec![base]
+    } else {
+        vec![startup, base]
+    })
+}
+
+fn matches_any(value: &str, accepted: &[String]) -> bool {
+    accepted
+        .iter()
+        .any(|command| matches_command(value, command))
 }
 
 trait Registry {
@@ -64,13 +99,13 @@ trait Registry {
     fn replace(&mut self, expected: Option<&str>, replacement: Option<&str>) -> Result<()>;
 }
 
-fn describe(value: Result<Option<String>>, command: &str) -> Status {
+fn describe(value: Result<Option<String>>, accepted: &[String]) -> Status {
     match value {
         Ok(None) => Status {
             enabled: Some(false),
             error: None,
         },
-        Ok(Some(value)) if matches_command(&value, command) => Status {
+        Ok(Some(value)) if matches_any(&value, accepted) => Status {
             enabled: Some(true),
             error: None,
         },
@@ -79,20 +114,23 @@ fn describe(value: Result<Option<String>>, command: &str) -> Status {
     }
 }
 
-fn toggle_registry(registry: &mut impl Registry, command: &str) -> Status {
+fn toggle_registry(registry: &mut impl Registry, accepted: &[String]) -> Status {
     let before = match registry.read() {
         Ok(value) => value,
         Err(error) => return Status::unknown(&error),
     };
     let enable = match before.as_deref() {
         None => true,
-        Some(value) if matches_command(value, command) => false,
+        Some(value) if matches_any(value, accepted) => false,
         Some(_) => return Status::unknown(CONFLICT),
     };
-    let result = registry.replace(before.as_deref(), enable.then_some(command));
+    // Enabling always writes the silent form (first entry); disabling accepts
+    // both forms, so an entry written by an older version can be removed.
+    let replacement = enable.then(|| accepted[0].clone());
+    let result = registry.replace(before.as_deref(), replacement.as_deref());
     // Never infer success from RegSetValue/RegDeleteValue returning success:
     // display what is actually present, including after a failed write.
-    let mut status = describe(registry.read(), command);
+    let mut status = describe(registry.read(), accepted);
     match result {
         Err(error) => {
             status.error = Some(match status.error {
@@ -110,37 +148,37 @@ fn toggle_registry(registry: &mut impl Registry, command: &str) -> Status {
     status
 }
 
-fn current_command() -> Result<String> {
+fn current_commands() -> Result<Vec<String>> {
     let path = std::env::current_exe().map_err(|_| "无法取得当前程序的绝对路径。".to_owned())?;
-    command_for_exe(&path)
+    accepted_commands(&path)
 }
 
 /// Read-only; a missing Run key/value stays missing.
 pub(crate) fn status() -> Status {
-    let command = match current_command() {
-        Ok(command) => command,
+    let accepted = match current_commands() {
+        Ok(accepted) => accepted,
         Err(error) => return Status::unknown(&error),
     };
     #[cfg(windows)]
-    return describe(native::RunRegistry.read(), &command);
+    return describe(native::RunRegistry.read(), &accepted);
     #[cfg(not(windows))]
     {
-        let _ = command;
+        let _ = accepted;
         Status::unknown("登录自启仅支持 Windows。")
     }
 }
 
 /// The only production entry point that may write, called by the tray action.
 pub(crate) fn toggle() -> Status {
-    let command = match current_command() {
-        Ok(command) => command,
+    let accepted = match current_commands() {
+        Ok(accepted) => accepted,
         Err(error) => return Status::unknown(&error),
     };
     #[cfg(windows)]
-    return toggle_registry(&mut native::RunRegistry, &command);
+    return toggle_registry(&mut native::RunRegistry, &accepted);
     #[cfg(not(windows))]
     {
-        let _ = command;
+        let _ = accepted;
         Status::unknown("登录自启仅支持 Windows。")
     }
 }
@@ -311,6 +349,25 @@ mod tests {
         command_for_exe(Path::new(r"C:\Program Files\Pi Launcher\启动器.exe")).unwrap()
     }
 
+    fn startup() -> String {
+        startup_command_for_exe(Path::new(r"C:\Program Files\Pi Launcher\启动器.exe")).unwrap()
+    }
+
+    fn accepted() -> Vec<String> {
+        accepted_commands(Path::new(r"C:\Program Files\Pi Launcher\启动器.exe")).unwrap()
+    }
+
+    #[test]
+    fn startup_registration_is_silent_and_keeps_the_old_form_acceptable() {
+        assert_eq!(startup(), format!("{} {START_HIDDEN_ARG}", command()));
+        // A 0.1.x entry (no argument) still counts as ours, so the switch
+        // reports it and can remove it.
+        assert_eq!(accepted(), vec![startup(), command()]);
+        // An over-long path degrades to the visible form instead of failing.
+        let long = format!("C:\\{}.exe", "a".repeat(252));
+        assert!(command_for_exe(Path::new(&long)).is_err());
+    }
+
     #[test]
     fn command_quotes_one_absolute_executable_without_arguments() {
         assert_eq!(command(), "\"C:\\Program Files\\Pi Launcher\\启动器.exe\"");
@@ -377,16 +434,21 @@ mod tests {
     #[test]
     fn matching_never_claims_other_paths_or_arguments() {
         let ours = command();
-        assert!(matches_command(&ours, &ours));
+        let ours_with_arg = startup();
+        assert!(matches_any(&ours, &accepted()));
+        assert!(matches_any(&ours_with_arg, &accepted()));
         for other in [
             ours.trim_matches('"').to_owned(),
             format!("{ours} --minimized"),
+            format!("{ours} --tray2"),
+            format!("{ours}  --tray"),
             format!(" {ours}"),
             "\"C:\\Other\\Pi Launcher.exe\"".to_owned(),
             "\"%LOCALAPPDATA%\\Pi Launcher.exe\"".to_owned(),
             ours.to_lowercase(),
+            ours_with_arg.to_lowercase(),
         ] {
-            assert!(!matches_command(&other, &ours), "{other}");
+            assert!(!matches_any(&other, &accepted()), "{other}");
         }
     }
 
@@ -434,7 +496,7 @@ mod tests {
     #[test]
     fn reading_absence_does_not_create_or_enable_anything() {
         let mut registry = MockRegistry::default();
-        assert_eq!(describe(registry.read(), &command()).enabled, Some(false));
+        assert_eq!(describe(registry.read(), &accepted()).enabled, Some(false));
         assert_eq!(registry.mutations, 0);
         assert_eq!(registry.value, None);
     }
@@ -442,16 +504,33 @@ mod tests {
     #[test]
     fn toggle_enables_then_disables_only_our_exact_command() {
         let mut registry = MockRegistry::default();
-        let ours = command();
-        let enabled = toggle_registry(&mut registry, &ours);
+        let enabled = toggle_registry(&mut registry, &accepted());
         assert_eq!(enabled.enabled, Some(true));
         assert_eq!(enabled.error, None);
-        assert_eq!(registry.value.as_deref(), Some(ours.as_str()));
-        let disabled = toggle_registry(&mut registry, &ours);
+        // Enabling writes the silent form, not the argument-less one.
+        assert_eq!(registry.value.as_deref(), Some(startup().as_str()));
+        let disabled = toggle_registry(&mut registry, &accepted());
         assert_eq!(disabled.enabled, Some(false));
         assert_eq!(disabled.error, None);
         assert_eq!(registry.value, None);
         assert_eq!(registry.mutations, 2);
+    }
+
+    #[test]
+    fn an_entry_written_by_an_older_version_is_recognised_and_removable() {
+        let mut registry = MockRegistry {
+            value: Some(command()),
+            ..Default::default()
+        };
+        // Shown as enabled, so the user is not offered a second registration.
+        let status = toggle_registry(&mut registry, &accepted());
+        assert_eq!(status.enabled, Some(false));
+        assert_eq!(registry.value, None);
+        assert_eq!(registry.mutations, 1);
+        assert_eq!(
+            describe(Ok(Some(command())), &accepted()).enabled,
+            Some(true)
+        );
     }
 
     #[test]
@@ -467,7 +546,7 @@ mod tests {
             },
         ] {
             let original = registry.value.clone();
-            let status = toggle_registry(&mut registry, &command());
+            let status = toggle_registry(&mut registry, &accepted());
             assert_eq!(status.enabled, None);
             assert!(status.error.is_some());
             assert_eq!(registry.value, original);
@@ -477,14 +556,13 @@ mod tests {
 
     #[test]
     fn failed_enable_and_disable_report_the_actual_state() {
-        let ours = command();
-        for original in [None, Some(ours.clone())] {
+        for original in [None, Some(command())] {
             let mut registry = MockRegistry {
                 value: original.clone(),
                 write_error: true,
                 ..Default::default()
             };
-            let status = toggle_registry(&mut registry, &ours);
+            let status = toggle_registry(&mut registry, &accepted());
             assert_eq!(status.enabled, Some(original.is_some()));
             assert!(status.error.as_deref().unwrap().contains("写入失败"));
             assert_eq!(registry.value, original);
@@ -494,14 +572,13 @@ mod tests {
 
     #[test]
     fn concurrent_foreign_edit_is_not_deleted_or_overwritten() {
-        let ours = command();
-        for original in [None, Some(ours.clone())] {
+        for original in [None, Some(command())] {
             let mut registry = MockRegistry {
                 value: original,
                 change_before_write: Some("foreign command".to_owned()),
                 ..Default::default()
             };
-            let status = toggle_registry(&mut registry, &ours);
+            let status = toggle_registry(&mut registry, &accepted());
             assert_eq!(status.enabled, None);
             assert!(status.error.is_some());
             assert_eq!(registry.value.as_deref(), Some("foreign command"));
@@ -515,7 +592,7 @@ mod tests {
             unreadable_after_write: true,
             ..Default::default()
         };
-        let status = toggle_registry(&mut registry, &command());
+        let status = toggle_registry(&mut registry, &accepted());
         assert_eq!(status.enabled, None);
         assert!(status.error.is_some());
     }
@@ -526,7 +603,7 @@ mod tests {
             discard_write: true,
             ..Default::default()
         };
-        let status = toggle_registry(&mut registry, &command());
+        let status = toggle_registry(&mut registry, &accepted());
         assert_eq!(status.enabled, Some(false));
         assert!(status.error.is_some());
     }
