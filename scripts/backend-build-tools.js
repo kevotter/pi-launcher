@@ -55,4 +55,4 @@ function serverEnvironment(source = process.env) {
   return env
 }
 
-module.exports = { validateProxyUrl, resolveRuntime, serverEnvironment }
+module.exports = { resolveRuntime, serverEnvironment }
