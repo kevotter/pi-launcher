@@ -32,6 +32,10 @@
     "shortDescription": "Pi Web desktop launcher",
     "longDescription": "Starts and manages a local Pi Web backend and shows it in a standalone window.",
     "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
       "nsis": {
         "installMode": "currentUser",
         "installerHooks": "./nsis/hooks.nsh",

@@ -309,6 +309,18 @@ Function PageReinstall
     ; Check the first radio button if this the first time
     ; we enter this page or if the second button wasn't
     ; selected the last time we were on this page
+    ;
+    ; Upgrading defaults to the in-place option instead. Uninstalling first runs
+    ; the old uninstaller without /UPDATE, and its pre-uninstall hook drops the
+    ; opt-in login-start entry, which nothing reinstates (the launcher only ever
+    ; writes it from the tray). README promises the opposite: run the new
+    ; installer over the old one, settings kept. A downgrade still uninstalls
+    ; first — mixed old/new files are worse than a re-registered startup entry.
+    ${If} $R0 = 1 ; upgrading
+    ${AndIf} $ReinstallPageCheck == ""
+      StrCpy $ReinstallPageCheck 2
+    ${EndIf}
+
     ${If} $ReinstallPageCheck <> 2
       SendMessage $R2 ${BM_SETCHECK} ${BST_CHECKED} 0
     ${Else}
@@ -374,7 +386,15 @@ Function PageLeaveReinstall
     ${Else}
       ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
       ReadRegStr $R1 SHCTX "${UNINSTKEY}" "UninstallString"
-      ${IfThen} $UpdateMode = 1 ${|} StrCpy $R1 "$R1 /UPDATE" ${|} ; append /UPDATE
+      ; An upgrade that uninstalls first is still an upgrade: the old
+      ; uninstaller must treat it as one, or its pre-uninstall hook deletes the
+      ; login-start entry and it drops the shortcuts and app data that an
+      ; in-place install keeps. Only the same-version "uninstall the app"
+      ; choice is a real removal, so only that one goes without /UPDATE.
+      ${If} $UpdateMode = 1
+      ${OrIf} $R0 = 1
+        StrCpy $R1 "$R1 /UPDATE"
+      ${EndIf}
       ${IfThen} $PassiveMode = 1 ${|} StrCpy $R1 "$R1 /P" ${|} ; append /P
       StrCpy $R1 "$R1 _?=$4" ; append uninstall directory
       ExecWait '$R1' $0
@@ -608,18 +628,12 @@ Section WebView2
     ; Skip if updating
     ${If} $UpdateMode <> 1
       !if "${INSTALLWEBVIEW2MODE}" == "downloadBootstrapper"
-        Delete "$TEMP\MicrosoftEdgeWebview2Setup.exe"
-        DetailPrint "$(webview2Downloading)"
-        NSISdl::download "https://go.microsoft.com/fwlink/p/?LinkId=2124703" "$TEMP\MicrosoftEdgeWebview2Setup.exe"
-        Pop $0
-        ${If} $0 == "success"
-          DetailPrint "$(webview2DownloadSuccess)"
-        ${Else}
-          DetailPrint "$(webview2DownloadError)"
-          Abort "$(webview2AbortError)"
-        ${EndIf}
-        StrCpy $6 "$TEMP\MicrosoftEdgeWebview2Setup.exe"
-        Goto install_webview2
+        ; NSISdl is a plain-HTTP client: Contrib/NSISdl/ReadMe.txt says "HTTPS is
+        ; not supported, only plain HTTP". Every Microsoft endpoint for the
+        ; bootstrapper is https-only, so this branch could only ever download
+        ; nothing and Abort. Refuse to build instead of shipping an installer
+        ; that cannot install WebView2 on a machine that lacks it.
+        !error "webviewInstallMode downloadBootstrapper cannot work here: NSISdl has no TLS. Use embedBootstrapper."
       !endif
 
       !if "${INSTALLWEBVIEW2MODE}" == "embedBootstrapper"
@@ -648,7 +662,13 @@ Section WebView2
           DetailPrint "$(webview2InstallSuccess)"
         ${Else}
           DetailPrint "$(webview2InstallError)"
-          Abort "$(webview2AbortError)"
+          ; The bootstrapper is Microsoft's signed downloader, so a failure here
+          ; means this machine is offline or Edge Update is broken. "Try
+          ; restarting the installer" would just loop, so hand over the manual
+          ; download instead. Abort uses a message box in interactive mode and
+          ; stays silent in silent mode, which is what a scripted install wants.
+          StrCpy $0 "$(webview2AbortError)$\r$\n$\r$\nhttps://go.microsoft.com/fwlink/p/?LinkId=2124703"
+          Abort $0
         ${EndIf}
       webview2_done:
     ${EndIf}
