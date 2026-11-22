@@ -71,11 +71,11 @@ npm run test:tools
 ```powershell
 npm run build:ui
 npm run test:ui
-npm run test:ui:layout
+npm run test:smoke
 ```
 
 `npm test` 组合工具检查与 Vitest/jsdom 组件检查。组件测试挂载真实 PrimeVue 控件，验证原生状态回放、默认不登记自启、未知/错误提示、防双击及尺寸测量。
-布局测试使用本机安装的 Microsoft Edge（Playwright `msedge`），新建隔离浏览器上下文，只打开本地构建页并模拟 native 信号；不连接 Pi Web、不读写 Run、不复用浏览器 profile。覆盖明暗主题、125%/150% DPR、双倍字号、小工作区、无正常滚动条及底部留白、悬停/焦点不改变尺寸、真实点击/Space/Esc 和 CSP。结果与预览图在 `.build/playwright/`。
+冒烟测试使用本机安装的 Microsoft Edge（Playwright `msedge`），新建隔离浏览器上下文，只打开本地构建页并模拟 native 信号；不连接 Pi Web、不读写 Run、不复用浏览器 profile。`tests/smoke/` 只证明每个页面能加载、启动且未被 CSP 拦住，是必须长期保持通过的套件。明暗主题、125%/150% DPR、双倍字号、小工作区、无正常滚动条及底部留白、悬停/焦点不改变尺寸、真实点击/Space/Esc 属于 `tests/feature/`，用来验证单次改动，验收后即删除，因此按改动临时运行 `npm run test:feature`（`npm run test:ui:layout` 一次跑两套）。结果与预览图在 `.build/playwright/`。
 
 浏览器测试不等于真实托盘定位、Windows 登录、安装/卸载验收；未运行时不能将组件测试当作布局证据。
 

@@ -49,8 +49,10 @@ jobs:
       - run: npm run check:syntax
       - run: npm test
       - run: npm run build:ui
-      - name: Verify tray and startup page in isolated Edge
-        run: npm run test:ui:layout
+      # Same permanent suite as the source checks: feature specs are per change
+      # and may already be gone by the time a release is cut.
+      - name: Verify tray and startup pages in isolated Edge
+        run: npm run test:smoke
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc --all-targets -- -D warnings

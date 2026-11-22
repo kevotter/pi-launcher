@@ -36,8 +36,11 @@ jobs:
       # Tool mocks and real Vue/PrimeVue component tests are separate from Rust.
       - run: npm test
       - run: npm run build:ui
-      - name: Verify tray and startup page in isolated Edge
-        run: npm run test:ui:layout
+      # tests/feature/ exists to validate one change and is deleted once it has
+      # been accepted by hand, so CI must not depend on it. Only the smoke suite
+      # is permanent.
+      - name: Verify tray and startup pages in isolated Edge
+        run: npm run test:smoke
       # The application uses Win32 APIs; do not claim Linux runtime coverage.
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc
