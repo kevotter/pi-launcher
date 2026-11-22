@@ -130,9 +130,14 @@ test('the failure state stops the spinner and keeps the reason readable', async 
     const box = document.getElementById('error-box');
     box.textContent = state.message;
     box.hidden = false;
+    document.querySelector('.card').setAttribute('aria-busy', 'false');
   });
   await expect(page.locator('#heading')).toHaveText('启动失败');
   await expect(page.locator('#error-box')).toContainText('launcher.log');
+  // The card stops claiming to be busy, and the reason sits in a live region:
+  // a screen reader would otherwise wait forever and never read the failure.
+  await expect(page.locator('.card')).toHaveAttribute('aria-busy', 'false');
+  await expect(page.locator('#error-box')).toHaveAttribute('role', 'alert');
   // Nothing keeps implying progress once the start has failed.
   await expect(page.locator('.status')).toBeHidden();
   await expect(page.locator('.track')).toBeHidden();

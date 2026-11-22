@@ -1123,7 +1123,11 @@ fn apply_error(window: &WebviewWindow<Wry>, report: &ErrorReport) {
         "heading": report.heading,
         "hint": report.hint,
     });
-    let script = r#"(function(){if(!document.body)return;const s=__STATE__;document.body.dataset.phase='failed';const h=document.getElementById('heading');if(h)h.textContent=s.heading;const p=document.querySelector('.subtitle');if(p)p.textContent=s.hint;const box=document.getElementById('error-box');if(box){box.textContent=s.message;box.hidden=false;}})()"#
+    // `aria-busy` is `true` in the markup, because the page starts loading. It
+    // has to be cleared here, or a screen reader keeps treating the card as
+    // still updating and never reads the reason. Cleared last, after the text
+    // is in place: the transition to `false` is what releases the announcement.
+    let script = r#"(function(){if(!document.body)return;const s=__STATE__;document.body.dataset.phase='failed';const h=document.getElementById('heading');if(h)h.textContent=s.heading;const p=document.querySelector('.subtitle');if(p)p.textContent=s.hint;const box=document.getElementById('error-box');if(box){box.textContent=s.message;box.hidden=false;}const card=document.querySelector('.card');if(card)card.setAttribute('aria-busy','false');})()"#
         .replace("__STATE__", &payload.to_string());
     eval_loading_page(window, &script);
 }

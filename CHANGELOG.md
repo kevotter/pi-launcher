@@ -9,6 +9,7 @@
 - Port probing during startup reads the listening-socket table instead of binding the port, so it cannot make the backend it is waiting for fail with `EADDRINUSE`.
 - Window geometry is written by one serialised path: the debounce tick and the quit flush no longer share `window.json.tmp`, and `flush` waits for a write in flight instead of returning while it is still landing.
 - An unexpected backend exit is now checked and recorded under the same lock the restart path takes, so a stale exit cannot clear a freshly started instance; the liveness probe re-checks its generation before reporting.
+- A startup failure clears the card's `aria-busy` and puts the reason in a live region, so a screen reader reads the failure instead of staying in a "loading" state that never ends.
 
 ## 0.1.3 — Plain startup screen, no embedded font
 
