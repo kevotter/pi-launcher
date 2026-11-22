@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.4 — Installer hardening and startup fixes
 
 - Remove page zoom entirely. `Ctrl` `+` / `-` / `0` no longer do anything, WebView2 zoom hotkeys are off, and the window always renders at 100%; `window.json` no longer stores a zoom value (an old file is still read, its `zoom` key ignored).
 - Ship the WebView2 bootstrapper inside the installer (`webviewInstallMode: embedBootstrapper`). The default download used `NSISdl`, which speaks plain HTTP only, so on a machine without WebView2 the installer could only fail; the template now refuses to build that mode at all. A bootstrapper that still fails points at the manual download page instead of telling the user to restart the installer.
