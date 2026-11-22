@@ -9,15 +9,15 @@
 | --- | --- |
 | `src-tauri/src/` | Rust 应用：配置、Node/后端检查、健康探测、进程身份与所有权、窗口和托盘 |
 | `src-tauri/Cargo.toml` / `Cargo.lock` | Rust 包版本、最低 Rust 1.90 与锁定依赖 |
-| `src-tauri/tauri.conf.json` | Tauri 应用身份、版本、静态资源、安全与 NSIS 打包配置 |
+| `src-tauri/tauri.conf.json` | Tauri 应用身份、版本、静态资源、安全与 NSIS 打包配置；`bundle.windows.webviewInstallMode` 固定 `embedBootstrapper`，安装包内嵌微软签名的 bootstrapper（构建期由 bundler 下载，运行期不依赖 NSIS 下载器） |
 | `ui/` | 加载页、Vue 3/PrimeVue 托盘与组件测试；Vite 编译到 `.build/ui/`，不加载 CDN |
 | `vite.config.mjs` / `vitest.config.mjs` | 多页前端构建、完整生产依赖许可收集、jsdom 真实组件测试 |
 | `playwright.config.mjs` / `tests/smoke/`、`tests/feature/` | 独立 Edge 验证，不运行 Tauri 或真实注册表；smoke 只证明页面能加载且未被 CSP 拦，feature 只验证单次改动，验收后即删 |
 | `src-tauri/src/tray_layout.rs` | 严格尺寸信号解析、逻辑像素/DPI 与显示器工作区限幅 |
-| `src-tauri/src/window_state.rs` | 主窗口位置/逻辑尺寸/最大化记忆与防抖落盘；恢复时按工作区钳制，损坏文件安全忽略 |
+| `src-tauri/src/window_state.rs` | 主窗口位置/逻辑尺寸/最大化记忆与防抖落盘；恢复时按工作区钳制，损坏文件安全忽略；写入串行化并带版本号，退出 flush 等待在途写入 |
 | `src-tauri/src/autostart.rs` | 当前用户 Run 启动项读取、显式切换及 mock 回归；写入 `--tray` 静默形式，兼容旧的无参数形式；不开放远程 IPC |
 | `src-tauri/nsis/hooks.nsh` | 真正卸载时仅删除与本次安装 EXE 命令匹配的启动项（带/不带 `--tray` 两种写法），更新时保留 |
-| `src-tauri/nsis/installer.nsi` | 固定 CLI 2.12.4 模板，去掉默认无条件 Run 删除逻辑；升级 CLI 时审查模板差异及许可 |
+| `src-tauri/nsis/installer.nsi` | 固定 CLI 2.12.4 模板，去掉默认无条件 Run 删除逻辑；升级默认原位覆盖、选择卸载时补 `/UPDATE`（否则旧 hook 删掉自启项）；`downloadBootstrapper` 直接 `!error`（NSISdl 无 TLS）；升级 CLI 时审查模板差异及许可 |
 | `config/launcher-defaults.json` | 内嵌安全默认值，个人设置在应用数据目录 |
 | `scripts/build-source.js` | 可选的、显式手动 fork 构建，输出生产依赖与 source-release.json |
 | `scripts/backend-build-tools.js` | 构建专用 Windows Node/npm 发现与环境净化，不是旧 JS 应用运行时 |

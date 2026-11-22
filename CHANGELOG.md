@@ -3,6 +3,12 @@
 ## Unreleased
 
 - Remove page zoom entirely. `Ctrl` `+` / `-` / `0` no longer do anything, WebView2 zoom hotkeys are off, and the window always renders at 100%; `window.json` no longer stores a zoom value (an old file is still read, its `zoom` key ignored).
+- Ship the WebView2 bootstrapper inside the installer (`webviewInstallMode: embedBootstrapper`). The default download used `NSISdl`, which speaks plain HTTP only, so on a machine without WebView2 the installer could only fail; the template now refuses to build that mode at all. A bootstrapper that still fails points at the manual download page instead of telling the user to restart the installer.
+- Upgrading no longer loses the opt-in login-start entry. The reinstall page defaults to installing in place, as README already promised, and the "uninstall first" choice now runs the old uninstaller with `/UPDATE` so its pre-uninstall hook keeps the `Run` value (and the shortcuts and app data that an in-place upgrade keeps).
+- The startup-failure dialog appears only when no window is showing the reason (a login launch), and no longer runs on the thread that consumes the tray's Restart and Quit: a modal box there made both wait until it was dismissed.
+- Port probing during startup reads the listening-socket table instead of binding the port, so it cannot make the backend it is waiting for fail with `EADDRINUSE`.
+- Window geometry is written by one serialised path: the debounce tick and the quit flush no longer share `window.json.tmp`, and `flush` waits for a write in flight instead of returning while it is still landing.
+- An unexpected backend exit is now checked and recorded under the same lock the restart path takes, so a stale exit cannot clear a freshly started instance; the liveness probe re-checks its generation before reporting.
 
 ## 0.1.3 — Plain startup screen, no embedded font
 
