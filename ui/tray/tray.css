@@ -95,7 +95,7 @@ body {
   background: var(--tray-hover); outline: 1px solid var(--tray-accent); outline-offset: -1px;
 }
 .tray-wrapper .tray-action:disabled { opacity: .42; cursor: default; }
-.tray-wrapper .tray-quit:not(:disabled):hover { background: rgba(190, 80, 70, .1); color: #c1544a; }
+.tray-wrapper .tray-quit:not(:disabled):hover { background: color-mix(in srgb, var(--tray-error) 12%, transparent); color: var(--tray-error); }
 .tray-wrapper .tray-quit:hover svg { color: inherit; }
 .startup-row { cursor: pointer; }
 .startup-row.startup-unknown, .startup-row.startup-pending { cursor: default; }

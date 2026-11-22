@@ -12,9 +12,9 @@
 | `src-tauri/tauri.conf.json` | Tauri 应用身份、版本、静态资源、安全与 NSIS 打包配置 |
 | `ui/` | 加载页、Vue 3/PrimeVue 托盘与组件测试；Vite 编译到 `.build/ui/`，不加载 CDN |
 | `vite.config.mjs` / `vitest.config.mjs` | 多页前端构建、完整生产依赖许可收集、jsdom 真实组件测试 |
-| `playwright.config.mjs` / `tests/ui/` | 独立 Edge 布局/交互验证，不运行 Tauri 或真实注册表 |
+| `playwright.config.mjs` / `tests/smoke/`、`tests/feature/` | 独立 Edge 验证，不运行 Tauri 或真实注册表；smoke 只证明页面能加载且未被 CSP 拦，feature 只验证单次改动，验收后即删 |
 | `src-tauri/src/tray_layout.rs` | 严格尺寸信号解析、逻辑像素/DPI 与显示器工作区限幅 |
-| `src-tauri/src/window_state.rs` | 主窗口位置/逻辑尺寸/最大化/缩放记忆与防抖落盘；恢复时按工作区钳制，损坏文件安全忽略 |
+| `src-tauri/src/window_state.rs` | 主窗口位置/逻辑尺寸/最大化记忆与防抖落盘；恢复时按工作区钳制，损坏文件安全忽略 |
 | `src-tauri/src/autostart.rs` | 当前用户 Run 启动项读取、显式切换及 mock 回归；写入 `--tray` 静默形式，兼容旧的无参数形式；不开放远程 IPC |
 | `src-tauri/nsis/hooks.nsh` | 真正卸载时仅删除与本次安装 EXE 命令匹配的启动项（带/不带 `--tray` 两种写法），更新时保留 |
 | `src-tauri/nsis/installer.nsi` | 固定 CLI 2.12.4 模板，去掉默认无条件 Run 删除逻辑；升级 CLI 时审查模板差异及许可 |
@@ -128,11 +128,11 @@ Next 构建与测试使用隔离 Pi 数据/构建 profile，不碰真实凭据/�
   `tauri.conf.json` 的 `app.security.csp`（安装后作为响应头下发）。WebView2 取两者的**交集**，
   所以某个指令只写在 meta 里等于没写——打包后按配置的 `default-src 'none'` 处理，本地浏览器预览却完全正常。
   配置是全局的，meta 是逐页的，规则是单向的：**配置必须放行每个页面声明的全部指令与来源**。
-  `scripts/check-csp.js`（`npm test` 内）会比对两者，`tests/ui/*.spec.js` 另外用真实 Edge
+  `scripts/check-csp.js`（`npm test` 内）会比对两者，`tests/smoke/` 与 `tests/feature/` 另外用真实 Edge
   **把配置当响应头注入**再渲染两个页面，缺指令会以 `securitypolicyviolation` 或 `naturalWidth === 0` 暴露。
 - `%APPDATA%\Pi Launcher`（或 `PI_LAUNCHER_DATA_DIR`）保留配置、日志、进程记录；
   `%LOCALAPPDATA%\Pi Launcher\webview2` 是独立 WebView2 profile，不能共用 Electron profile。
-- `window.json` 只存主窗口几何、最大化与缩放，不含路径或凭据；损坏即忽略并在下次保存时覆盖。
+- `window.json` 只存主窗口几何与最大化，不含路径或凭据；损坏即忽略并在下次保存时覆盖。
   恢复必须落在当前某块显示器的工作区内，且逻辑尺寸不随 DPI 变化。
 - 后端意外退出或启动失败只报告、不退出应用：窗口回到内置页显示原因与日志，托盘保留“重启本地服务”。
   每次启动尝试都重新读取 `launcher-config.json`（换来新的 `PiBackend`），所以改配置后重启即可生效，包括端口和后端目录。

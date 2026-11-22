@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Remove page zoom entirely. `Ctrl` `+` / `-` / `0` no longer do anything, WebView2 zoom hotkeys are off, and the window always renders at 100%; `window.json` no longer stores a zoom value (an old file is still read, its `zoom` key ignored).
+
 ## 0.1.3 — Plain startup screen, no embedded font
 
 - Restore the startup screen that 0.1.2 replaced: the card, the spinner, the indeterminate progress bar and the three-step list are back, and Rust fills the status line, the loopback address and the current step again through the same `eval` phases (no IPC permission). A startup failure stops the spinner, the bar and the step list instead of leaving them implying progress.

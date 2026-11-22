@@ -4,6 +4,11 @@ import { test, expect } from '@playwright/test';
 // The startup page is the first thing a user sees and the last thing that shows
 // a reason when the backend cannot start. Both are checked here in real Edge.
 
+// This page is the main window's first document, so it is opened at a size the
+// main window can actually have: the shared 500x900 is narrower than
+// `min_inner_size(900, 600)` in lib.rs.
+test.use({ viewport: { width: 1280, height: 769 } });
+
 // The webview applies `app.security.csp` from tauri.conf.json as a response
 // header *on top of* the page's meta tag, and the two are intersected. A
 // directive missing from the conf therefore blocks a request that meta allows —

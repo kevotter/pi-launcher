@@ -22,6 +22,8 @@
     "test:tools": "node --test scripts/test-release-unit.js scripts/test-backend-tools.js scripts/test-version-unit.js scripts/test-stage-unit.js scripts/test-csp-unit.js",
     "test:ui": "vitest run",
     "test:ui:layout": "playwright test",
+    "test:smoke": "playwright test tests/smoke",
+    "test:feature": "playwright test tests/feature",
     "check:syntax": "node scripts/check-syntax.js",
     "check:version": "node scripts/check-version.js",
     "stage:installer": "node scripts/stage-installer.js",

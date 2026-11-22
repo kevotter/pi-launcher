@@ -52,24 +52,6 @@ static TRAY_CREATION: Mutex<()> = Mutex::new(());
 /// Bound early right-click workers while the popover is still being built.
 static TRAY_OPEN_PENDING: AtomicBool = AtomicBool::new(false);
 
-/// Injected into every document. Keyboard zoom is signalled with window.open so
-/// the remote Pi Web page needs no Tauri IPC permissions at all.
-const ZOOM_SCRIPT: &str = r#"
-(function () {
-  document.addEventListener('keydown', function (event) {
-    if (!event.ctrlKey || event.altKey || event.metaKey) return;
-    var action = null;
-    if (event.key === '+' || event.key === '=') action = 'in';
-    else if (event.key === '-') action = 'out';
-    else if (event.key === '0') action = 'reset';
-    if (!action) return;
-    event.preventDefault();
-    event.stopPropagation();
-    try { window.open('https://pi-launcher.zoom/' + action, '_blank'); } catch (error) {}
-  }, true);
-})();
-"#;
-
 fn internal_origin(windows: bool) -> (&'static str, &'static str) {
     if windows {
         ("http", "tauri.localhost")
@@ -227,7 +209,6 @@ struct Context {
     closed: Arc<AtomicBool>,
     /// "A quit has already been requested", so the tray cannot queue two.
     quitting: Arc<AtomicBool>,
-    zoom: Arc<Mutex<f64>>,
     server: Arc<Mutex<Option<ServerInfo>>>,
     shutdown: Arc<Mutex<Option<mpsc::Sender<Command>>>>,
     /// Last phase pushed to the loading page. Replayed on every page load so a
@@ -244,7 +225,7 @@ struct Context {
     /// Last natural content measurement; None keeps the first opening hidden.
     tray_size: Arc<Mutex<Option<tray_layout::Size>>>,
     tray_open_requested: Arc<AtomicBool>,
-    /// Remembered window geometry and zoom.
+    /// Remembered window geometry.
     window: window_state::Store,
     /// A start attempt is in progress, so "重启" must not queue a second one.
     starting: Arc<AtomicBool>,
@@ -277,7 +258,6 @@ impl Context {
         state_dir: PathBuf,
         webview_dir: PathBuf,
         window: window_state::Store,
-        zoom: f64,
     ) -> Self {
         Self {
             opener: start_opener(&state_dir),
@@ -288,7 +268,6 @@ impl Context {
             ))),
             closed: Arc::new(AtomicBool::new(false)),
             quitting: Arc::new(AtomicBool::new(false)),
-            zoom: Arc::new(Mutex::new(zoom)),
             server: Arc::new(Mutex::new(None)),
             shutdown: Arc::new(Mutex::new(None)),
             last_phase: Arc::new(Mutex::new(None)),
@@ -322,12 +301,7 @@ pub fn run() {
     let webview_dir = util::resolve_webview_dir(&state_dir);
     let (window_store, saved_window) = window_state::Store::open(&state_dir);
     window_store.spawn_writer();
-    let context = Context::new(
-        state_dir.clone(),
-        webview_dir,
-        window_store,
-        saved_window.map(|saved| saved.zoom).unwrap_or(1.0),
-    );
+    let context = Context::new(state_dir.clone(), webview_dir, window_store);
     let setup_context = context.clone();
 
     let built = tauri::Builder::default()
@@ -462,11 +436,52 @@ pub fn run() {
     });
 }
 
-/// The startup page's own paper colour. Kept in sync with `ui/index.html` by
-/// hand; it is only on screen for a frame or two before the page paints over
-/// it, and the page is light in every Windows theme, so this is not themed.
+/// Whether Windows is set to light app mode.
+///
+/// `prefers-color-scheme` inside WebView2 resolves against this same value
+/// (`AppsUseLightTheme`), so reading it here is what keeps the window's first
+/// frame and the page in agreement. Without it the window paints the light
+/// canvas for the ~1 s WebView2 needs to produce its first frame, and that
+/// reads as a white flash every time dark mode launches.
+fn system_uses_light_theme() -> bool {
+    use windows_sys::Win32::System::Registry::{
+        RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD,
+    };
+
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    let path = wide(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+    let name = wide("AppsUseLightTheme");
+    let mut data: u32 = 1;
+    let mut size = std::mem::size_of::<u32>() as u32;
+    // SAFETY: both strings are NUL-terminated and outlive the call; `data` is a
+    // u32 and `size` declares exactly that, matching RRF_RT_REG_DWORD.
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            path.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            std::ptr::null_mut(),
+            (&mut data as *mut u32).cast(),
+            &mut size,
+        )
+    };
+    // A missing key or an unexpected type means a stock install: light.
+    status != 0 || data != 0
+}
+
+/// The startup page's own canvas colour, for the frame or two before the page
+/// paints. Both values must match `--canvas` in `ui/index.html`; if they drift
+/// the window flashes a different shade at every launch.
 fn window_background() -> tauri::window::Color {
-    tauri::window::Color(0xfd, 0xf3, 0xf1, 0xff)
+    if system_uses_light_theme() {
+        tauri::window::Color(0xf5, 0xf5, 0xf3, 0xff)
+    } else {
+        tauri::window::Color(0x14, 0x15, 0x18, 0xff)
+    }
 }
 
 /// Work areas of every monitor, in physical pixels.
@@ -498,7 +513,6 @@ fn build_window(
 ) -> tauri::Result<()> {
     let navigation_context = context.clone();
     let new_window_context = context.clone();
-    let new_window_handle = app.handle().clone();
     let page_load_context = context.clone();
 
     let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
@@ -516,13 +530,14 @@ fn build_window(
         // Native file-drop interception consumes WebView2's HTML5 drag/drop
         // events. Pi Web needs the standard DOM drop path instead.
         .disable_drag_drop_handler()
-        .initialization_script(ZOOM_SCRIPT)
+        // Zooming is off: the window stays at 100%. The Pi Web layout is
+        // designed for the size the window remembers, and a half-zoomed
+        // webview was the only state that could make it unreadable.
+        .zoom_hotkeys_enabled(false)
         .on_document_title_changed(|window, _title| {
             let _ = window.set_title(APP_NAME);
         })
         .on_page_load(move |window, payload| {
-            let zoom = *lock(&page_load_context.zoom);
-            let _ = window.set_zoom(zoom);
             // Only the bundled loading page understands the phase payload; the
             // remote Pi Web document must stay untouched.
             let internal = is_loading_url(payload.url());
@@ -571,11 +586,9 @@ fn build_window(
             }
         })
         .on_new_window(move |url, _features| {
-            if let Some(action) = action_from_url(&url, "pi-launcher.zoom") {
-                if matches!(action, "in" | "out" | "reset") {
-                    apply_zoom(&new_window_handle, &new_window_context, action);
-                }
-            } else if !matches!(url.host_str(), Some("pi-launcher.zoom" | TRAY_ACTION_HOST)) {
+            // The tray signals its actions with a window.open on its own host;
+            // everything else is a real link and belongs in the browser.
+            if !matches!(url.host_str(), Some(TRAY_ACTION_HOST)) {
                 open_external(url.as_str(), &new_window_context);
             }
             NewWindowResponse::Deny
@@ -951,26 +964,6 @@ fn handle_tray_action(app: &AppHandle, context: &Context, action: &str) {
         "dismiss" => {}
         _ => {}
     }
-}
-
-fn apply_zoom(app: &AppHandle, context: &Context, action: &str) {
-    // Keyboard zoom remains scoped to the main window, not the tray menu.
-    let zoom = {
-        let mut current = lock(&context.zoom);
-        let next = match action {
-            "in" => *current + 0.05,
-            "out" => *current - 0.05,
-            "reset" => 1.0,
-            "125" => 1.25,
-            _ => return,
-        };
-        *current = (next.clamp(0.75, 2.0) * 100.0).round() / 100.0;
-        *current
-    };
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.set_zoom(zoom);
-    }
-    context.window.record_zoom(zoom);
 }
 
 fn show_app_window(app: &AppHandle) {
@@ -1766,10 +1759,6 @@ mod navigation_tests {
         assert_eq!(
             action_from_url(&url("https://pi-launcher.tray/show"), TRAY_ACTION_HOST),
             Some("show")
-        );
-        assert_eq!(
-            action_from_url(&url("https://pi-launcher.zoom/in"), "pi-launcher.zoom"),
-            Some("in")
         );
         for value in [
             "http://pi-launcher.tray/show",

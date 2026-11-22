@@ -32,7 +32,7 @@
 - Keep startup separate from backend installation/updates. Never silently download, replace or select another backend. No automatic old-Electron-installer upgrade; Tauri 0.1.x → newer is a plain installer upgrade in place, without uninstalling or deleting data.
 - Login startup registers `"<exe>" --tray` (silent, tray only). The argument-less form written by 0.1.x must stay recognised as enabled and removable, including in the NSIS pre-uninstall hook.
 - A backend that exits unexpectedly or fails to start is reported, never fatal to the launcher: the bundled page and the tray show the reason, and only an explicit tray restart stops the launcher-owned instance (never an adopted external one) before starting a new one.
-- Remembered window geometry/zoom is disposable UI state in `window.json`: ignore a corrupt file instead of repairing it, and clamp a restore into a current monitor work area.
+- Remembered window geometry is disposable UI state in `window.json`: ignore a corrupt file instead of repairing it, and clamp a restore into a current monitor work area. The window does not zoom; it always renders at 100%.
 - Do not modify the backend repository as part of launcher changes without separate authorization. Tool modes are backend features, not an OS sandbox.
 - Rust owns configuration, health checks, process ownership, windows and tray. Remote Pi Web must not gain Tauri IPC privileges.
 - `scripts/build-source.js`, `backend-build-tools.js`, `backend-manifest.js`, `windows-test-*.mjs` and `config/backend-build.json` are optional explicit fork build tooling only; never call them during app startup.
@@ -45,7 +45,7 @@
 ## Verification rules
 
 - Node tools tests, Windows Rust tests, desktop behavior and packaged installer acceptance are separate evidence levels.
-- `npm test` runs release/backend tooling and jsdom Vue/PrimeVue component tests. `npm run test:ui:layout` separately tests the built page in isolated Edge, not real Tauri/registry behavior. Build UI before Rust tests; run Windows Rust fmt/test/clippy separately as documented.
+- `npm test` runs release/backend tooling and jsdom Vue/PrimeVue component tests. Edge specs are split in two: `npm run test:smoke` (`tests/smoke/`) only proves each document loads, boots and is not blocked by CSP, and is the suite that must keep passing; `npm run test:feature` (`tests/feature/`) checks how a screen looks and behaves, exists to validate one change, and is deleted once that change has been accepted by hand. `npm run test:ui:layout` runs both. Neither sees real Tauri/registry behavior. Build UI before Rust tests; run Windows Rust fmt/test/clippy separately as documented.
 - Use temporary state, isolated Pi data and independent ports. Do not use real sessions or credentials as fixtures.
 - Missing prerequisites are not a pass. Old Electron results do not validate Tauri; Linux Node checks do not validate Win32 Rust or the EXE.
 - Record actual commands/outcomes in the task report, not README. Do not invent success rates or claim CI ran merely because YAML exists.

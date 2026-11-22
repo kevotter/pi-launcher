@@ -1,4 +1,4 @@
-//! Remembered main-window geometry, maximized state and zoom.
+//! Remembered main-window geometry and maximized state.
 //!
 //! Stored as `window.json` next to `launcher-config.json`. This is UI state
 //! only. A corrupt or nonsensical file is ignored and replaced on the next
@@ -22,8 +22,6 @@ const WRITE_DELAY: Duration = Duration::from_millis(700);
 const DEFAULT_SIZE: (u32, u32) = (1280, 860);
 const MIN_SIZE: (u32, u32) = (320, 240);
 const MAX_SIZE: (u32, u32) = (8000, 8000);
-pub(crate) const MIN_ZOOM: f64 = 0.75;
-pub(crate) const MAX_ZOOM: f64 = 2.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Saved {
@@ -33,7 +31,6 @@ pub(crate) struct Saved {
     pub width: u32,
     pub height: u32,
     pub maximized: bool,
-    pub zoom: f64,
 }
 
 impl Saved {
@@ -44,7 +41,6 @@ impl Saved {
             width,
             height,
             maximized: false,
-            zoom: 1.0,
         }
     }
 }
@@ -95,7 +91,6 @@ pub(crate) struct Placement {
     pub width: f64,
     pub height: f64,
     pub maximized: bool,
-    pub zoom: f64,
 }
 
 pub(crate) fn default_placement() -> Placement {
@@ -104,15 +99,6 @@ pub(crate) fn default_placement() -> Placement {
         width: f64::from(DEFAULT_SIZE.0),
         height: f64::from(DEFAULT_SIZE.1),
         maximized: false,
-        zoom: 1.0,
-    }
-}
-
-fn clamp_zoom(zoom: f64) -> f64 {
-    if zoom.is_finite() {
-        zoom.clamp(MIN_ZOOM, MAX_ZOOM)
-    } else {
-        1.0
     }
 }
 
@@ -144,7 +130,6 @@ pub(crate) fn place(saved: Option<Saved>, monitors: &[Monitor]) -> Placement {
         width: f64::from(saved.width.clamp(MIN_SIZE.0, MAX_SIZE.0)),
         height: f64::from(saved.height.clamp(MIN_SIZE.1, MAX_SIZE.1)),
         maximized: saved.maximized,
-        zoom: clamp_zoom(saved.zoom),
     };
     let Some(monitor) = pick(saved.x, saved.y, monitors) else {
         return placement;
@@ -185,7 +170,6 @@ struct Record {
     height: Option<u32>,
     #[serde(default)]
     maximized: bool,
-    zoom: Option<f64>,
 }
 
 fn parse(text: &str) -> Option<Saved> {
@@ -204,7 +188,6 @@ fn parse(text: &str) -> Option<Saved> {
         width,
         height,
         maximized: record.maximized,
-        zoom: clamp_zoom(record.zoom.unwrap_or(1.0)),
     })
 }
 
@@ -268,11 +251,6 @@ impl Store {
         self.update(|saved| saved.maximized = maximized);
     }
 
-    pub(crate) fn record_zoom(&self, zoom: f64) {
-        let zoom = clamp_zoom(zoom);
-        self.update(|saved| saved.zoom = zoom);
-    }
-
     /// One detached thread per process; it ends with the process.
     pub(crate) fn spawn_writer(&self) {
         let store = self.clone();
@@ -318,7 +296,6 @@ fn write(path: &Path, saved: Saved) -> std::io::Result<()> {
         "width": saved.width,
         "height": saved.height,
         "maximized": saved.maximized,
-        "zoom": (saved.zoom * 100.0).round() / 100.0,
     });
     let text = serde_json::to_vec_pretty(&body)?;
     let tmp = path.with_extension("json.tmp");
@@ -338,7 +315,6 @@ mod tests {
             width,
             height,
             maximized: false,
-            zoom: 1.0,
         }
     }
 
@@ -416,28 +392,17 @@ mod tests {
     }
 
     #[test]
-    fn maximized_and_zoom_survive_an_invalid_zoom_value() {
+    fn a_maximized_window_is_restored_as_maximized() {
         let mut state = saved(10, 10, 1200, 800);
         state.maximized = true;
-        state.zoom = f64::NAN;
-        let placement = place(Some(state), &desktops());
-        assert!(placement.maximized);
-        assert_eq!(placement.zoom, 1.0);
-
-        state.zoom = 9.0;
-        assert_eq!(place(Some(state), &desktops()).zoom, MAX_ZOOM);
-        state.zoom = 0.1;
-        assert_eq!(place(Some(state), &desktops()).zoom, MIN_ZOOM);
+        assert!(place(Some(state), &desktops()).maximized);
     }
 
     #[test]
     fn parsing_rejects_foreign_or_absurd_files() {
         assert_eq!(
             parse(r#"{"schema":1,"x":10,"y":20,"width":1200,"height":800}"#),
-            Some(Saved {
-                zoom: 1.0,
-                ..saved(10, 20, 1200, 800)
-            })
+            Some(saved(10, 20, 1200, 800))
         );
         // A BOM is what Notepad writes; it must not invalidate the file.
         assert!(
@@ -468,7 +433,6 @@ mod tests {
         let (store, restored) = Store::open(&dir);
         assert_eq!(restored, None);
         store.record_geometry(64, 64, 1000, 700);
-        store.record_zoom(1.25);
         store.record_maximized(true);
         store.flush();
 
@@ -476,7 +440,6 @@ mod tests {
         assert_eq!(
             restored,
             Some(Saved {
-                zoom: 1.25,
                 maximized: true,
                 ..saved(64, 64, 1000, 700)
             })
@@ -492,12 +455,10 @@ mod tests {
         fs::create_dir_all(&dir).expect("create temp dir");
         let (store, _) = Store::open(&dir);
         store.record_geometry(0, 0, 10, 10);
-        store.record_zoom(f64::INFINITY);
         store.flush();
         let (_, restored) = Store::open(&dir);
         let restored = restored.expect("saved state");
         assert_eq!((restored.width, restored.height), MIN_SIZE);
-        assert_eq!(restored.zoom, 1.0);
         let _ = fs::remove_dir_all(&dir);
     }
 }

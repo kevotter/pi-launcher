@@ -45,7 +45,7 @@ pub fn err(message: impl Into<String>) -> Error {
 /// Lock helper that ignores poisoning.
 ///
 /// A panic in one thread must not turn every later `lock()` into a second
-/// panic: the state behind these mutexes (zoom, phase, server handle) is still
+/// panic: the state behind these mutexes (phase, server handle) is still
 /// structurally valid, and the launcher is better off degraded than dead.
 pub fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
