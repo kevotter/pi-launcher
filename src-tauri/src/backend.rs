@@ -13,7 +13,9 @@ use std::time::Instant;
 use serde_json::Value;
 
 use crate::config::{read_config, require_backend_path, validate_proxy_url, Config};
-use crate::http::{check_ready_within, check_server, is_port_free, FIRST_REQUEST_TIMEOUT};
+use crate::http::{
+    check_ready_within, check_server, is_listening, is_port_free, FIRST_REQUEST_TIMEOUT,
+};
 use crate::process::{
     inspect_process, process_has_exited, stop_process_tree, wait_for_completion, JobHandle,
     ProcessInfo,
@@ -704,10 +706,13 @@ impl PiBackend {
                 )));
             }
             probes += 1;
-            // Gate on a bind test: it is free and instant, whereas a refused
-            // loopback connect can take seconds on machines with a filter
-            // driver. Only speak HTTP once something is actually listening.
-            let listening = !is_port_free(port);
+            // Gate on a listener lookup: it is free and instant, whereas a
+            // refused loopback connect can take seconds on machines with a
+            // filter driver. Only speak HTTP once something is actually
+            // listening. A bind test would answer the same question but holds
+            // the port for a moment, and losing that race is what made a
+            // healthy child die with EADDRINUSE.
+            let listening = is_listening(port);
             if listening && listening_at.is_none() {
                 listening_at = Some(started.elapsed());
             }
@@ -1111,6 +1116,20 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
+    }
+
+    /// Exercises the listener lookup end to end, which also pins the byte order
+    /// of `dwLocalPort`: get that wrong and every port looks free, so startup
+    /// would only ever fail later with a confusing EADDRINUSE.
+    #[test]
+    fn a_real_listener_is_visible_to_the_port_probe() {
+        let listener = std::net::TcpListener::bind((crate::util::HOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        assert!(is_listening(port), "listener on {port} not seen");
+        assert!(!is_port_free(port));
+        drop(listener);
+        assert!(!is_listening(port), "port {port} still reported as taken");
+        assert!(is_port_free(port));
     }
 
     #[test]

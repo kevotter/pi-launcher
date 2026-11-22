@@ -72,6 +72,96 @@ pub fn is_port_free(port: u16) -> bool {
     TcpListener::bind((HOST, port)).is_ok()
 }
 
+/// Whether something is already listening on the loopback port.
+///
+/// Deliberately not `!is_port_free`: a bind test holds the port for as long as
+/// the socket lives, so polling it while the backend is booting can make the
+/// child fail with EADDRINUSE — startup then dies for no visible reason. This
+/// asks the kernel what is listening, which holds nothing.
+pub fn is_listening(port: u16) -> bool {
+    #[cfg(windows)]
+    {
+        // The table query can fail (rare: iphlpapi missing, out of memory). Fall
+        // back to the bind test rather than guess, even though it races.
+        win::port_is_listening(port).unwrap_or_else(|| !is_port_free(port))
+    }
+    #[cfg(not(windows))]
+    {
+        !is_port_free(port)
+    }
+}
+
+#[cfg(windows)]
+mod win {
+    use std::ffi::c_void;
+
+    use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID,
+        TCP_TABLE_OWNER_PID_LISTENER,
+    };
+    use windows_sys::Win32::Networking::WinSock::AF_INET;
+
+    /// dwLocalAddr is in network byte order, so 127.0.0.1 is these four bytes in
+    /// memory regardless of the host's endianness.
+    const LOOPBACK: u32 = u32::from_ne_bytes([127, 0, 0, 1]);
+    /// A listener bound to the wildcard address blocks a loopback bind too.
+    const ANY: u32 = 0;
+
+    /// `None` when the query itself failed, so the caller can pick a fallback.
+    pub(super) fn port_is_listening(port: u16) -> Option<bool> {
+        // A u32 buffer, not u8: the table is cast to a struct of u32 fields, and
+        // a byte vector is not guaranteed to be suitably aligned.
+        let mut words: Vec<u32> = Vec::new();
+        let mut size: u32 = 0;
+        let mut filled = false;
+        for _ in 0..4 {
+            let code = unsafe {
+                GetExtendedTcpTable(
+                    words.as_mut_ptr().cast::<c_void>(),
+                    &mut size,
+                    0,
+                    u32::from(AF_INET),
+                    TCP_TABLE_OWNER_PID_LISTENER,
+                    0,
+                )
+            };
+            if code == ERROR_INSUFFICIENT_BUFFER {
+                words.resize((size as usize).div_ceil(4).max(1), 0);
+                continue;
+            }
+            if code != 0 {
+                return None;
+            }
+            filled = true;
+            break;
+        }
+        if !filled {
+            // Kept growing for four rounds: the table is churning. Say nothing
+            // rather than read a buffer that was never filled.
+            return None;
+        }
+        if words.is_empty() {
+            return Some(false);
+        }
+        let table = words.as_ptr().cast::<MIB_TCPTABLE_OWNER_PID>();
+        unsafe {
+            let count = (*table).dwNumEntries as usize;
+            let rows = std::slice::from_raw_parts((*table).table.as_ptr(), count);
+            Some(
+                rows.iter().any(|row| {
+                    local_port(row) == port && matches!(row.dwLocalAddr, ANY | LOOPBACK)
+                }),
+            )
+        }
+    }
+
+    /// dwLocalPort carries the port in network byte order in its low 16 bits.
+    fn local_port(row: &MIB_TCPROW_OWNER_PID) -> u16 {
+        u16::from_be(row.dwLocalPort as u16)
+    }
+}
+
 struct Budget<'a> {
     deadline: Instant,
     closed: &'a AtomicBool,
