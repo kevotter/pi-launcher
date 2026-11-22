@@ -199,6 +199,10 @@ struct Inner {
     saved: Option<Saved>,
     dirty: bool,
     last_write: Instant,
+    /// Bumped by every change. A write only clears `dirty` when it captured the
+    /// latest revision, so a change made while the file was being written is
+    /// still flushed instead of being swallowed.
+    revision: u64,
 }
 
 /// Debounced writer for the remembered state.
@@ -206,6 +210,10 @@ struct Inner {
 pub(crate) struct Store {
     path: PathBuf,
     inner: Arc<Mutex<Inner>>,
+    /// Held across snapshot-and-write, so the debounce tick and the quit flush
+    /// cannot interleave on the same temporary file, and a flush waits for a
+    /// write already in flight instead of returning as if the state were saved.
+    io: Arc<Mutex<()>>,
 }
 
 impl Store {
@@ -220,7 +228,9 @@ impl Store {
                     saved,
                     dirty: false,
                     last_write: Instant::now(),
+                    revision: 0,
                 })),
+                io: Arc::new(Mutex::new(())),
             },
             saved,
         )
@@ -234,6 +244,7 @@ impl Store {
         change(&mut saved);
         inner.saved = Some(saved);
         inner.dirty = true;
+        inner.revision = inner.revision.wrapping_add(1);
     }
 
     pub(crate) fn record_geometry(&self, x: i32, y: i32, width: u32, height: u32) {
@@ -269,7 +280,8 @@ impl Store {
     }
 
     fn write_pending(&self, force: bool) {
-        let saved = {
+        let _io = lock(&self.io);
+        let (saved, revision) = {
             let mut inner = lock(&self.inner);
             if !inner.dirty || (!force && inner.last_write.elapsed() < WRITE_DELAY) {
                 return;
@@ -278,12 +290,16 @@ impl Store {
                 return;
             };
             inner.last_write = Instant::now();
-            inner.dirty = false;
-            saved
+            (saved, inner.revision)
         };
-        if write(&self.path, saved).is_err() {
-            // Retry on the next tick; the state is still in memory.
-            lock(&self.inner).dirty = true;
+        // `dirty` is cleared only after the bytes are on disk. Clearing it up
+        // front let the quit path see a clean store while this write was still
+        // in flight, and the process then exited before it landed.
+        if write(&self.path, saved).is_ok() {
+            let mut inner = lock(&self.inner);
+            if inner.revision == revision {
+                inner.dirty = false;
+            }
         }
     }
 }
