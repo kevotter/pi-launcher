@@ -235,6 +235,12 @@ struct Context {
     /// Bumped for every start attempt. A watcher belongs to one generation, so
     /// an intentional restart cannot be reported as a crash.
     generation: Arc<AtomicU64>,
+    /// Serialises "this generation ended" against "start the next one".
+    ///
+    /// A watcher checks `generation` and then mutates state; without this lock a
+    /// preemption between the two let a stale exit clear the live instance and
+    /// send the window back to the error page.
+    lifecycle: Arc<Mutex<()>>,
     /// Last liveness probe result. Only meaningful while `server` is set.
     healthy: Arc<AtomicBool>,
     /// Wall-clock start of the current backend, for the tray's uptime line.
@@ -254,11 +260,7 @@ struct ErrorReport {
 }
 
 impl Context {
-    fn new(
-        state_dir: PathBuf,
-        webview_dir: PathBuf,
-        window: window_state::Store,
-    ) -> Self {
+    fn new(state_dir: PathBuf, webview_dir: PathBuf, window: window_state::Store) -> Self {
         Self {
             opener: start_opener(&state_dir),
             state_dir: Arc::new(state_dir),
@@ -280,6 +282,7 @@ impl Context {
             starting: Arc::new(AtomicBool::new(false)),
             stopped: Arc::new(AtomicBool::new(false)),
             generation: Arc::new(AtomicU64::new(0)),
+            lifecycle: Arc::new(Mutex::new(())),
             healthy: Arc::new(AtomicBool::new(false)),
             started_at: Arc::new(Mutex::new(None)),
             pending_maximize: Arc::new(AtomicBool::new(false)),
@@ -444,9 +447,7 @@ pub fn run() {
 /// canvas for the ~1 s WebView2 needs to produce its first frame, and that
 /// reads as a white flash every time dark mode launches.
 fn system_uses_light_theme() -> bool {
-    use windows_sys::Win32::System::Registry::{
-        RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD,
-    };
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_DWORD};
 
     fn wide(value: &str) -> Vec<u16> {
         value.encode_utf16().chain(std::iter::once(0)).collect()
@@ -1246,6 +1247,10 @@ fn startup(context: Context, app: AppHandle, receiver: mpsc::Receiver<Command>) 
 
         match receiver.recv() {
             Ok(Command::Restart) if !context.quitting.load(Ordering::SeqCst) => {
+                // Held until the loading page is up: a watcher that already saw
+                // the old child exit must not report a crash into the middle of
+                // this teardown.
+                let _gate = lock(&context.lifecycle);
                 // Silence both watchers before stopping: the exit we are about
                 // to cause must not be reported as a crash.
                 context.generation.fetch_add(1, Ordering::SeqCst);
@@ -1378,13 +1383,10 @@ fn spawn_child_watcher(
                 }
             };
             if let Some(status) = status {
-                // A restart or quit bumps the generation before it stops the
-                // backend, so only a genuinely unexpected exit gets here.
-                if worker.generation.load(Ordering::SeqCst) == generation
-                    && !worker.quitting.load(Ordering::SeqCst)
-                {
-                    backend_exited(&worker, &app, status.code().unwrap_or(-1));
-                }
+                // The "is this still the current attempt" decision lives inside
+                // `backend_exited`, under the lifecycle lock: checking here and
+                // acting there left a window for a restart to slip in between.
+                backend_exited(&worker, &app, generation, status.code().unwrap_or(-1));
                 return;
             }
             if worker.closed.load(Ordering::SeqCst)
@@ -1422,6 +1424,12 @@ fn spawn_health_watcher(context: &Context, app: &AppHandle, url: String, generat
                 } else {
                     strikes = 0;
                 }
+                // A probe can take up to its read budget, so the attempt may have
+                // been replaced while it was in flight. Reporting that verdict
+                // then paints the new instance with the old one's result.
+                if worker.generation.load(Ordering::SeqCst) != generation {
+                    return;
+                }
                 let healthy = strikes < HEALTH_STRIKES;
                 if worker.healthy.swap(healthy, Ordering::SeqCst) != healthy {
                     log(
@@ -1443,7 +1451,19 @@ fn spawn_health_watcher(context: &Context, app: &AppHandle, url: String, generat
 
 /// The backend exited on its own. Keep the launcher alive: the user may want to
 /// read the log, open the config directory, or simply restart.
-fn backend_exited(context: &Context, app: &AppHandle, code: i32) {
+///
+/// A restart or quit bumps the generation before it stops the backend, so this
+/// only fires for a genuinely unexpected exit — and it decides that under the
+/// same lock the restart path holds, because a preemption between the check and
+/// the mutations below used to blank a freshly started instance and put the
+/// window back on the error page.
+fn backend_exited(context: &Context, app: &AppHandle, generation: u64, code: i32) {
+    let _gate = lock(&context.lifecycle);
+    if context.generation.load(Ordering::SeqCst) != generation
+        || context.quitting.load(Ordering::SeqCst)
+    {
+        return;
+    }
     let state_dir = context.state_dir.as_ref().clone();
     log(
         &state_dir,
@@ -1509,14 +1529,50 @@ fn report_start_failure(context: &Context, app: &AppHandle, state_dir: &Path, er
     }
     update_tray_state(app);
 
-    // A login launch (`--tray`) has no visible window, so the dialog is the
-    // only way the user learns that nothing started.
-    log(state_dir, "Showing startup error dialog");
-    if !process::show_message_box(APP_NAME, &report.message) {
+    // A visible window already shows the reason, so a box would only repeat it.
+    // What the box is really for is the login launch (`--tray`), where there is
+    // no window at all. Off the startup thread either way: `MessageBoxW` blocks
+    // its caller, and this caller is the only one that consumes Restart/Quit.
+    let window_shows_reason = app
+        .get_webview_window("main")
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false);
+    if !window_shows_reason {
+        show_startup_dialog(state_dir, report.message);
+    }
+}
+
+/// Set while a startup-failure box is on screen: two failures in a row must not
+/// stack modal boxes over the same desktop.
+static STARTUP_DIALOG_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// Show the startup failure on a thread of its own, so the tray keeps answering.
+fn show_startup_dialog(state_dir: &Path, message: String) {
+    if STARTUP_DIALOG_OPEN.swap(true, Ordering::SeqCst) {
         log(
             state_dir,
-            "Windows did not display the error dialog; the window and tray still show it",
+            "Startup error dialog is already open; not stacking one",
         );
+        return;
+    }
+    let dir = state_dir.to_path_buf();
+    let spawned = std::thread::Builder::new()
+        .name("startup-dialog".into())
+        .spawn(move || {
+            let shown = process::show_message_box(APP_NAME, &message);
+            STARTUP_DIALOG_OPEN.store(false, Ordering::SeqCst);
+            log(
+                &dir,
+                if shown {
+                    "Startup error acknowledged"
+                } else {
+                    "Windows did not display the startup error dialog; the window and tray still show it"
+                },
+            );
+        });
+    if spawned.is_err() {
+        STARTUP_DIALOG_OPEN.store(false, Ordering::SeqCst);
+        log(state_dir, "Cannot start the startup-dialog thread");
     }
 }
 
