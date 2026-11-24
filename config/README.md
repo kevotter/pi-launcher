@@ -23,7 +23,7 @@ WebView2 与 Electron 的 browser local storage / profile 不保证互相迁移�
 1. 准备 Windows 原生 Node.js >=22.19、WebView2 Runtime 和已安装或自行构建的 Pi Web 后端。
 2. 复制模板到个人配置目录，或直接创建最小 JSON。已有配置先读取比较，不覆盖。
 3. 保存为 UTF-8 标准 JSON；UTF-8 BOM 也会被忽略。
-4. 修改后从托盘退出再重开，确保没有运行中的任务。
+4. 改完在托盘选“重启本地服务”即可生效，不必退出启动器；有运行中的任务先结束任务。
 
 以下 PowerShell 在源码根目录执行，不覆盖已有配置；安装包用户也可直接用文本编辑器创建文件：
 

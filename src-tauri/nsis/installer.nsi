@@ -1,6 +1,10 @@
 ; Vendored from Tauri CLI 2.12.4, MIT License (see LICENSE-TAURI-MIT).
 ; https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi
-; Local change: remove unconditional Run-value deletion; hooks.nsh verifies ownership.
+; Local changes, each commented where it sits:
+;   - remove the unconditional Run-value deletion; hooks.nsh verifies ownership
+;   - an upgrade preselects the in-place option, and "uninstall first" passes
+;     /UPDATE so the old pre-uninstall hook keeps the login-start entry
+;   - downloadBootstrapper fails the build, because NSISdl has no TLS
 Unicode true
 ManifestDPIAware true
 ; Add in `dpiAwareness` `PerMonitorV2` to manifest for Windows 10 1607+ (note this should not affect lower versions since they should be able to ignore this and pick up `dpiAware` `true` set by `ManifestDPIAware true`)

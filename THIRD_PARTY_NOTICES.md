@@ -37,7 +37,7 @@ and test tools, not bundled desktop runtimes.
 - `@tauri-apps/cli` and NSIS are build-time tools; their licenses remain with their authors.
 - `src-tauri/nsis/installer.nsi` is the Tauri CLI 2.12.4 NSIS template, used under
   the MIT license (Copyright (c) 2017 - Present Tauri Apps Contributors), with the
-  unconditional Run startup-value deletion removed. Source:
+  local changes listed in that file's header. Source:
   https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi
   Its complete notice is in `src-tauri/nsis/LICENSE-TAURI-MIT` and is bundled as
   `LICENSE-TAURI-MIT`. The CLI version is pinned; template updates require review.

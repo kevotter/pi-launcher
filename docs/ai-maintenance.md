@@ -61,6 +61,7 @@ npm run test:tools
 - `scripts/test-backend-tools.js`：repository 规范化、清单哈希/安全路径、构建环境、交付跨盘/竞争/失败保留。
 - `scripts/test-version-unit.js`：所有版本一致与缺失/错配拒绝，不修改锁文件。
 - `scripts/test-stage-unit.js`：本地原地校验、CI 临时附件命名/哈希、拒绝多产物或覆盖已有 CI 暂存目录。
+- `scripts/test-csp-unit.js`：页面 meta 与 `tauri.conf.json` 的 CSP 逐指令比对，缺指令或多余来源都失败。
 旧 `scripts/test-tray-unit.js` fake DOM 测试已移除，改为下述真实组件与浏览器检查。
 
 这些检查不启动真实 Pi Web、不下载 Electron、不调用模型，也不是应用配置或 Win32 行为回归。
@@ -128,8 +129,9 @@ Next 构建与测试使用隔离 Pi 数据/构建 profile，不碰真实凭据/�
   `tauri.conf.json` 的 `app.security.csp`（安装后作为响应头下发）。WebView2 取两者的**交集**，
   所以某个指令只写在 meta 里等于没写——打包后按配置的 `default-src 'none'` 处理，本地浏览器预览却完全正常。
   配置是全局的，meta 是逐页的，规则是单向的：**配置必须放行每个页面声明的全部指令与来源**。
-  `scripts/check-csp.js`（`npm test` 内）会比对两者，`tests/smoke/` 与 `tests/feature/` 另外用真实 Edge
+  `scripts/check-csp.js`（`npm test` 内）会逐指令比对两者；`tests/feature/` 另外用真实 Edge
   **把配置当响应头注入**再渲染两个页面，缺指令会以 `securitypolicyviolation` 或 `naturalWidth === 0` 暴露。
+  `tests/smoke/` 只按页面自身的 meta 标签打开，不注入响应头。
 - `%APPDATA%\Pi Launcher`（或 `PI_LAUNCHER_DATA_DIR`）保留配置、日志、进程记录；
   `%LOCALAPPDATA%\Pi Launcher\webview2` 是独立 WebView2 profile，不能共用 Electron profile。
 - `window.json` 只存主窗口几何与最大化，不含路径或凭据；损坏即忽略并在下次保存时覆盖。

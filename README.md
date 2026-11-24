@@ -10,7 +10,7 @@ Pi Web 的 Windows 启动器（Tauri 2 + WebView2）。它负责启动和管理 
 
 ## 安装
 
-从 [Releases](https://github.com/kevotter/pi-launcher/releases) 下 `pi-launcher-*-x64-setup.exe` 安装。安装包未签名，Windows 可能显示 SmartScreen 提醒，确认下载来源后再选择继续运行。
+从 [Releases](https://github.com/kevotter/pi-launcher/releases) 下载最新的 `.exe` 安装包运行。安装包未签名，Windows 可能显示 SmartScreen 提醒，确认下载来源后再选择继续运行。
 
 **升级**：已经在用 0.1.x（Tauri 版）时直接运行新安装包覆盖安装，先退出正在运行的 Pi Launcher（含托盘），不需要卸载。配置、`.pi` 凭据和会话、窗口位置、开机自启设置都会保留。
 
@@ -142,7 +142,7 @@ Get-Content -LiteralPath $file
 
 后端进程意外退出时，启动器不会跟着退出：窗口会切回启动页并显示退出码和日志路径，状态标记变成“已停止”，从托盘“重启本地服务”就能重新拉起。启动失败也走同一条路，改完配置后直接重试，不用重新打开程序。进程还在但长时间不应答时，状态标记会显示“无响应”。
 
-从托盘退出会连同后端一起结束。手动运行 `pi-launcher.exe --tray` 可以静默启动（登录自启用的是同样参数）。
+从托盘退出会连同后端一起结束。
 
 ## 更新
 
