@@ -235,7 +235,7 @@ describe('real PrimeVue tray mounted with Vue createApp', () => {
 
   it('uses only Rust maxHeight for clipping and releases globals/listeners on unmount', async () => {
     await state({ enabled: false }, { maxHeight: 180 });
-    expect(q('.tray-wrapper').style.getPropertyValue('--tray-card-max-height')).toBe('156px');
+    expect(q('.tray-wrapper').style.getPropertyValue('--tray-card-max-height')).toBe('168px');
     expect(q('.tray-wrapper').style.height).toBe('');
     expect(typeof window.__measureTray).toBe('function');
     app.unmount();

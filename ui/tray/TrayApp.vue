@@ -47,10 +47,13 @@ const uptime = computed(() => {
 });
 const badgeTitle = computed(() => [badge.value.hint, uptime.value].filter(Boolean).join(' · '));
 const restartDisabled = computed(() => state.value.starting === true || state.value.canRestart === false);
+// Must match `.tray-wrapper` padding in tray.css: the gutters belong to the
+// window, so the card has to give up both sides of the work area Rust handed us.
+const SHADOW_GUTTER = 6;
 const maxHeightStyle = computed(() => {
   const height = state.value.maxHeight;
-  return typeof height === 'number' && Number.isFinite(height) && height > 24
-    ? { '--tray-card-max-height': `${height - 24}px` } : {};
+  return typeof height === 'number' && Number.isFinite(height) && height > SHADOW_GUTTER * 2
+    ? { '--tray-card-max-height': `${height - SHADOW_GUTTER * 2}px` } : {};
 });
 const groups = [
   [{ action: 'show', label: '显示主窗口' },

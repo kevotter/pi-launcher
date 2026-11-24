@@ -12,7 +12,7 @@
   --tray-ok: #4f8a6b;
   --tray-warn: #9a7420;
   --tray-error: #b4554a;
-  --tray-shadow: 0 6px 14px -6px #1c1f4050, 0 2px 6px -2px #1c1f4020;
+  --tray-shadow: 0 4px 12px -5px #1c1f4055, 0 1px 3px -1px #1c1f4025;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -25,7 +25,7 @@
     --tray-ok: #7fc09b;
     --tray-warn: #d9b061;
     --tray-error: #d4897f;
-    --tray-shadow: 0 6px 14px -6px #000b, 0 2px 6px -2px #0006;
+    --tray-shadow: 0 4px 12px -5px #000c, 0 1px 3px -1px #0007;
   }
 }
 * { box-sizing: border-box; }
@@ -39,9 +39,13 @@ body {
 }
 /* Fixed intrinsic width; neither root nor card stretches to the webview height.
    280px is the lower bound both the bridge and `tray_layout.rs` enforce, so the
-   12px shadow gutters may not grow: a narrower wrapper would be quietly clamped
-   back to 280 and leave dead space inside the window. */
-.tray-wrapper { width: 280px; padding: 12px; }
+   shadow gutters may not grow: a narrower wrapper would be quietly clamped back
+   to 280 and leave dead space inside the window.
+   The gutters are also click-dead area — a click there lands on the window and
+   neither dismisses the menu nor reaches what is behind it — so they are kept at
+   the shadow's actual reach (4px offset + 6px blur - 5px spread = 5px). Widening
+   them again means shipping the shadow clipped at the window edge. */
+.tray-wrapper { width: 280px; padding: 6px; }
 .tray-card {
   position: relative;
   border: 1px solid var(--tray-line);
