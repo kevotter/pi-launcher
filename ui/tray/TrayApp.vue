@@ -120,7 +120,7 @@ onBeforeUnmount(() => {
     <section ref="card" class="tray-card">
       <div ref="content" class="tray-content">
         <header class="tray-head">
-          <img :src="iconUrl" alt="" width="26" height="26">
+          <img :src="iconUrl" alt="" width="20" height="20">
           <div class="head-text">
             <h1>Pi Launcher</h1>
           </div>

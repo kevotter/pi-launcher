@@ -37,12 +37,15 @@ body {
   user-select: none;
   -webkit-user-select: none;
 }
-/* Fixed intrinsic width; neither root nor card stretches to the webview height. */
-.tray-wrapper { width: 328px; padding: 12px; }
+/* Fixed intrinsic width; neither root nor card stretches to the webview height.
+   280px is the lower bound both the bridge and `tray_layout.rs` enforce, so the
+   12px shadow gutters may not grow: a narrower wrapper would be quietly clamped
+   back to 280 and leave dead space inside the window. */
+.tray-wrapper { width: 280px; padding: 12px; }
 .tray-card {
   position: relative;
   border: 1px solid var(--tray-line);
-  border-radius: 16px;
+  border-radius: 12px;
   padding: 8px;
   background: var(--tray-surface);
   box-shadow: var(--tray-shadow);
@@ -60,32 +63,32 @@ body {
    visible. The title never shrinks, so ellipsis is only a last resort. */
 .tray-head {
   display: flex; align-items: center; flex-wrap: wrap;
-  gap: 6px 9px; padding: 9px 9px 8px;
+  gap: 4px 8px; padding: 6px 8px 5px;
 }
 .tray-head img { flex: none; }
 .head-text { flex: 0 0 auto; min-width: 0; max-width: 100%; }
 .tray-head h1 {
-  margin: 0; font-size: 1.27rem; font-weight: 650; letter-spacing: -.35px; line-height: 1.25;
+  margin: 0; font-size: 1.05rem; font-weight: 650; letter-spacing: -.2px; line-height: 1.25;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .status-tag {
   display: inline-flex; align-items: center; gap: 5px; flex: none; margin-left: auto;
-  padding: 4px 8px; border-radius: 99px; background: var(--tray-hover);
-  color: var(--tray-muted); font-size: .85rem; font-weight: 550; line-height: 1.2; white-space: nowrap;
+  padding: 3px 7px; border-radius: 99px; background: var(--tray-hover);
+  color: var(--tray-muted); font-size: .8rem; font-weight: 550; line-height: 1.2; white-space: nowrap;
 }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .status-tag[data-status="running"] { color: var(--tray-ok); background: color-mix(in srgb, var(--tray-ok) 12%, transparent); }
 .status-tag[data-status="unresponsive"] { color: var(--tray-warn); background: color-mix(in srgb, var(--tray-warn) 14%, transparent); }
 .status-tag[data-status="stopped"] { color: var(--tray-error); background: color-mix(in srgb, var(--tray-error) 12%, transparent); }
-.tray-wrapper .p-divider { margin: 4px 9px; width: auto; min-height: 1px; }
+.tray-wrapper .p-divider { margin: 3px 8px; width: auto; min-height: 1px; }
 .tray-wrapper .p-divider::before { border-color: var(--tray-line); }
 .tray-wrapper .tray-action, .startup-row {
   display: flex; align-items: center; justify-content: flex-start; gap: 11px;
   /* PrimeVue hover/active add a 1px border. Reserve it in every state so
      pointer movement cannot grow a row and trigger a native resize. */
-  width: 100%; margin: 0; padding: 8px 10px; border: 1px solid transparent; border-radius: 9px;
+  width: 100%; margin: 0; padding: 6px 8px; border: 1px solid transparent; border-radius: 8px;
   background: transparent; color: var(--tray-ink); font: inherit;
-  font-weight: 400; line-height: 1.4; text-align: left; text-decoration: none;
+  font-weight: 400; line-height: 1.35; text-align: left; text-decoration: none;
 }
 .tray-wrapper .tray-action { cursor: pointer; box-shadow: none; }
 .tray-action svg, .startup-row > svg { width: 16px; height: 16px; flex: none; color: var(--tray-muted); }
@@ -101,10 +104,10 @@ body {
 .startup-row.startup-unknown, .startup-row.startup-pending { cursor: default; }
 .startup-row .p-toggleswitch {
   flex: none;
-  --p-toggleswitch-width: 2.6rem;
-  --p-toggleswitch-height: 1.54rem;
-  --p-toggleswitch-handle-size: 1.08rem;
-  --p-toggleswitch-gap: .23rem;
+  --p-toggleswitch-width: 2.3rem;
+  --p-toggleswitch-height: 1.35rem;
+  --p-toggleswitch-handle-size: .95rem;
+  --p-toggleswitch-gap: .2rem;
   --p-toggleswitch-checked-background: var(--tray-ok);
   --p-toggleswitch-checked-hover-background: var(--tray-ok);
 }
