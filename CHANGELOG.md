@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5 — Compact tray menu
+
+- The tray popover rendered at 328×402 logical pixels, roughly 1.9× the area of a Windows context menu holding the same eight actions. Width is now 280, exactly the floor the tray bridge and `tray_layout.rs` already enforced, so the measured size is accepted instead of being silently clamped back up. Rows land on 31.5 px against the native 32, the header band drops 43 → 32 px (20 px icon, 1.05 rem title) and dividers 9 → 7 px; the menu now sits at about 1.35× a native one. Every action, the status badge and the startup switch are unchanged.
+- The 12 px shadow gutters around the card were part of the window, which made them click-dead: a click there neither dismissed the popover nor reached what was behind it. They are now 6 px, the drop shadow's actual reach, so nothing is clipped at the window edge, and the card gains the difference as content width (268 instead of 256). `TrayApp.vue` now derives the card's max-height from one `SHADOW_GUTTER` constant rather than a bare `24`, so the CSS and the clipping arithmetic cannot drift apart again.
+
 ## 0.1.4 — Installer hardening and startup fixes
 
 - Remove page zoom entirely. `Ctrl` `+` / `-` / `0` no longer do anything, WebView2 zoom hotkeys are off, and the window always renders at 100%; `window.json` no longer stores a zoom value (an old file is still read, its `zoom` key ignored).

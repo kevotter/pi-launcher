@@ -10,7 +10,7 @@
 **从旧 Electron 客户端（0.1.0 之前）迁移：仍需手动卸载。** 无旧安装器自动升级，禁止两个客户端同时运行；Electron browser local storage/profile 不保证迁移到 WebView2，不能承诺页面偏好、浏览器登录状态自动保留。
 
 两种路径都**不要删除 `%APPDATA%\Pi Launcher` 配置（尤其 `launcher-config.json`）和 `.pi` 数据目录（含自定义目录）**。
-以上要求必须保留在 README、CHANGELOG 和自动生成的 Release body 顶部；Release notes 由 `publish-release.js` 从 CHANGELOG 对应版本小节生成，缺小节直接失败，`test-release-unit.js` 对文案与小节来源作断言。
+以上 0.1.x 升级与数据保留要求必须保留在 README 和自动生成的 Release body 顶部（升级段落由 `publish-release.js` 固定生成，不依赖 CHANGELOG）；旧 Electron 客户端的迁移要求只在 README 与本文保留，Release body 不再重复。Release notes 由 `publish-release.js` 从 CHANGELOG 对应版本小节生成，缺小节直接失败，`test-release-unit.js` 对文案与小节来源作断言。
 
 ## 1. 源码与工具检查
 
@@ -110,7 +110,7 @@ Tauri `beforeBuildCommand` 先执行 `npm run build:ui`，Vite 编译两页并�
 
 push/PR 执行 Windows Node 工具检查及 Rust fmt/test/clippy，Node 22 缓存 npm，Rust stable MSVC 与 Cargo cache。
 官方 Actions 已升级为 Node 24 运行时版本；这与项目使用的 Node 22 工具链相互独立。
-检查同时编译 Vue 前端、运行真实组件及独立 Edge 的托盘布局与启动页测试；不构建安装器，不触发发布，不调用模型。工作流存在不代表检查已执行。
+检查同时编译 Vue 前端、运行组件测试和独立 Edge 的冒烟检查（两个页面能加载、未被 CSP 拦住）；不构建安装器，不触发发布，不调用模型。工作流存在不代表检查已执行。
 
 ### 手动 Build Windows（默认仅附件）
 
@@ -119,7 +119,7 @@ push/PR 执行 Windows Node 工具检查及 Rust fmt/test/clippy，Node 22 缓�
 
 - build job 保持 `contents: read`，检出 `github.sha`，不跟随移动分支头，不持久化 checkout 凭据。
 - Windows runner、Node 22/npm cache、Rust stable >=1.90 MSVC、rustfmt/clippy/Cargo cache。
-- `npm ci`、版本/语法/工具和组件测试、Vite 编译、独立 Edge 托盘布局与启动页及 Windows Rust 检查后执行上述 locked NSIS build 与 staging。
+- `npm ci`、版本/语法/工具和组件测试、Vite 编译、独立 Edge 冒烟检查及 Windows Rust 检查后执行上述 locked NSIS build 与 staging。
 - 仅从 runner 临时发布目录上传 ASCII installer EXE 与 SHA256SUMS.txt 为 `pi-launcher-windows-x64`，保留 7 天；
   不上传整个 target、工作区、依赖、调试文件、后端或个人数据。
 - 不配置模型凭据、个人 PAT、代理秘密或签名证书。看到实际日志/附件后才能报告打包成功。
@@ -131,10 +131,10 @@ push/PR 执行 Windows Node 工具检查及 Rust fmt/test/clippy，Node 22 缓�
 
 1. 检出与 build 相同的固定 SHA，下载本次 run 的附件，不重新构建。
 2. `publish-release.js` 校验纯文件/非 symlink、ASCII 白名单与 EXE 哈希，缓存已校验字节后上传。
-3. 从该 SHA 的 package version 生成 `v0.1.4`，完整分页查询所有 Release（含未打标签的草稿）。
+3. 从该 SHA 的 package version 生成 `v0.1.5`，完整分页查询所有 Release（含未打标签的草稿）。
    已有同名 tag 或 Release 就停止，即使 tag 指向同一 SHA；API 查询失败不当作不存在。
 4. 原子创建指向构建 SHA 的 tag，再建草稿；上传 EXE/校验文件并检查服务端实际文件名一致后才公开。
-   prerelease 标记按版本识别，body 顶部含 Tauri 版直接覆盖升级、旧 Electron 客户端需手动卸载及数据保留警告；正文 notes 取自 CHANGELOG 该版本小节。
+   prerelease 标记按版本识别，body 顶部含 Tauri 版直接覆盖升级与数据保留警告（旧 Electron 迁移只在 README 说明）；正文 notes 取自 CHANGELOG 该版本小节。
 5. 任一步失败保留 tag/草稿供人工检查，不自动删除、复用或覆盖；并发发布串行，原子 tag 创建仍是最终防线。
 
 Release 公开附件不受 Actions 的 7 天限制。发布成功只证明上传完成，不替代桌面/安装/卸载验收。
