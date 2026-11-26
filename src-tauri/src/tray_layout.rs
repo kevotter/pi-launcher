@@ -1,6 +1,6 @@
 //! Bounded logical-pixel sizing signals accepted only from the bundled tray.
 
-pub(crate) const DEFAULT_WIDTH: u32 = 328;
+pub(crate) const DEFAULT_WIDTH: u32 = 280;
 pub(crate) const MAX_WIDTH: u32 = 480;
 pub(crate) const MAX_HEIGHT: u32 = 900;
 

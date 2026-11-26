@@ -363,7 +363,20 @@ mod tests {
         // A 0.1.x entry (no argument) still counts as ours, so the switch
         // reports it and can remove it.
         assert_eq!(accepted(), vec![startup(), command()]);
-        // An over-long path degrades to the visible form instead of failing.
+        // Paths in 254..=260 UTF-16 units (including quotes) have no room for
+        // ` --tray`: degrade to the argument-less command instead of failing.
+        let near_limit = format!("C:\\{}.exe", "a".repeat(250));
+        let plain = command_for_exe(Path::new(&near_limit)).unwrap();
+        assert_eq!(plain.encode_utf16().count(), 259);
+        assert_eq!(
+            startup_command_for_exe(Path::new(&near_limit)).unwrap(),
+            plain
+        );
+        assert_eq!(
+            accepted_commands(Path::new(&near_limit)).unwrap(),
+            vec![plain]
+        );
+        // Truly over-long paths (>260 units quoted) are rejected outright.
         let long = format!("C:\\{}.exe", "a".repeat(252));
         assert!(command_for_exe(Path::new(&long)).is_err());
     }

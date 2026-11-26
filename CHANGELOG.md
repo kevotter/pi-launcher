@@ -1,9 +1,14 @@
 # Changelog
 
-## 0.1.5 — Compact tray menu
+## 0.1.5 — Compact tray menu and lifecycle fixes
 
 - The tray popover rendered at 328×402 logical pixels, roughly 1.9× the area of a Windows context menu holding the same eight actions. Width is now 280, exactly the floor the tray bridge and `tray_layout.rs` already enforced, so the measured size is accepted instead of being silently clamped back up. Rows land on 31.5 px against the native 32, the header band drops 43 → 32 px (20 px icon, 1.05 rem title) and dividers 9 → 7 px; the menu now sits at about 1.35× a native one. Every action, the status badge and the startup switch are unchanged.
 - The 12 px shadow gutters around the card were part of the window, which made them click-dead: a click there neither dismissed the popover nor reached what was behind it. They are now 6 px, the drop shadow's actual reach, so nothing is clipped at the window edge, and the card gains the difference as content width (268 instead of 256). `TrayApp.vue` now derives the card's max-height from one `SHADOW_GUTTER` constant rather than a bare `24`, so the CSS and the clipping arithmetic cannot drift apart again.
+- Minimizing a maximized main window or starting hidden at login (`--tray`) no longer overwrites the remembered `maximized` state or normal window coordinates in `window.json`.
+- `node --version` now runs under the sanitized backend environment and validates both exit status and version format before reading or writing `node-runtime.json`, so an inherited `NODE_OPTIONS` or transient probe failure cannot poison future starts.
+- Post-start fatal errors clean up any launcher-spawned backend, display their dialog off the startup thread without blocking tray Quit/Restart, and keep tray Restart usable if Windows suppresses the dialog.
+- Adopted launcher-owned backends and reused external Pi Web instances now transition to `已停止` when they exit instead of staying marked `无响应`; port probing inspects both IPv4 and IPv6 listener tables without transiently binding the port during startup; `output_within` drains child pipes concurrently so verbose `taskkill /t` output cannot deadlock.
+- Checking "Delete app data" in the NSIS uninstaller now removes `%APPDATA%\Pi Launcher` and `%LOCALAPPDATA%\Pi Launcher\webview2` (never `.pi` credentials/sessions) instead of targeting the unused `${BUNDLEID}` directory, and the upgrade reinstall page focuses the preselected in-place option.
 
 ## 0.1.4 — Installer hardening and startup fixes
 

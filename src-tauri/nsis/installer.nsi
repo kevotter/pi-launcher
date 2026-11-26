@@ -2,8 +2,12 @@
 ; https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.12.4/crates/tauri-bundler/src/bundle/windows/nsis/installer.nsi
 ; Local changes, each commented where it sits:
 ;   - remove the unconditional Run-value deletion; hooks.nsh verifies ownership
-;   - an upgrade preselects the in-place option, and "uninstall first" passes
-;     /UPDATE so the old pre-uninstall hook keeps the login-start entry
+;   - an upgrade preselects (and focuses) the in-place option, passive mode
+;     matches the default choice without reading uncreated controls, and
+;     "uninstall first" passes /UPDATE so the old pre-uninstall hook keeps the
+;     login-start entry
+;   - opt-in "Delete app data" on real uninstall cleans ${PRODUCTNAME} data and
+;     its WebView2 directory rather than the unused ${BUNDLEID} path
 ;   - downloadBootstrapper fails the build, because NSISdl has no TLS
 Unicode true
 ManifestDPIAware true
@@ -327,11 +331,12 @@ Function PageReinstall
 
     ${If} $ReinstallPageCheck <> 2
       SendMessage $R2 ${BM_SETCHECK} ${BST_CHECKED} 0
+      ${NSD_SetFocus} $R2
     ${Else}
       SendMessage $R3 ${BM_SETCHECK} ${BST_CHECKED} 0
+      ${NSD_SetFocus} $R3
     ${EndIf}
 
-    ${NSD_SetFocus} $R2
     nsDialogs::Show
   ${EndIf}
 FunctionEnd
@@ -344,7 +349,17 @@ Function PageReinstallUpdateSelection
   ${EndIf}
 FunctionEnd
 Function PageLeaveReinstall
-  ${NSD_GetState} $R2 $R1
+  ${If} $PassiveMode = 1
+    ; No dialog controls exist in passive mode. Match the interactive default:
+    ; reinstall/upgrade in place (keep Run entry), uninstall first on downgrade.
+    ${If} $R0 = 1
+      StrCpy $R1 0
+    ${Else}
+      StrCpy $R1 1
+    ${EndIf}
+  ${Else}
+    ${NSD_GetState} $R2 $R1
+  ${EndIf}
 
   ; If migrating from Wix, always uninstall
   ${If} $WixMode = 1
@@ -946,8 +961,13 @@ Section Uninstall
     DeleteRegKey /ifempty HKCU "${MANUKEY}"
 
     SetShellVarContext current
-    RmDir /r "$APPDATA\${BUNDLEID}"
-    RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
+    ; App state lives under `%APPDATA%\Pi Launcher` and the WebView2 profile
+    ; under `%LOCALAPPDATA%\Pi Launcher\webview2` (not `${BUNDLEID}`). Never
+    ; touch `.pi` credentials/sessions, and remove the install root only if empty.
+    RmDir /r "$APPDATA\${PRODUCTNAME}"
+    RmDir /r "$LOCALAPPDATA\${PRODUCTNAME}\webview2"
+    RMDir "$LOCALAPPDATA\${PRODUCTNAME}"
+    RMDir "$INSTDIR"
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL

@@ -55,6 +55,8 @@ jobs:
         run: npm run test:smoke
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc
+      - name: Run isolated Windows Node backend lifecycle fixtures
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc lifecycle_fixture -- --ignored --test-threads=1
       - run: cargo clippy --manifest-path src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc --all-targets -- -D warnings
 
       # Tauri CLI runs cargo build with --locked and bundles NSIS, no updater/publish.

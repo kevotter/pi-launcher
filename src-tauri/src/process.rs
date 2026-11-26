@@ -31,8 +31,9 @@ use windows_sys::Win32::System::JobObjects::{
 use windows_sys::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
 use windows_sys::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, QueryFullProcessImageNameW, WaitForSingleObject,
-    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_SYNCHRONIZE, PROCESS_TERMINATE,
+    GetExitCodeProcess, GetProcessTimes, OpenProcess, QueryFullProcessImageNameW,
+    WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_SYNCHRONIZE,
+    PROCESS_TERMINATE,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     IsWindow, MessageBoxW, MB_ICONERROR, MB_OK, MB_SETFOREGROUND,
@@ -200,7 +201,9 @@ unsafe fn command_line(handle: HANDLE) -> Option<String> {
 /// page forever — `startupTimeoutMs` could not help, because the timeout was
 /// never reached.
 pub fn output_within(mut command: Command, budget: std::time::Duration) -> Result<Output> {
+    use std::io::Read;
     use std::time::Instant;
+    const MAX_CAPTURE: u64 = 1024 * 1024;
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -208,12 +211,34 @@ pub fn output_within(mut command: Command, budget: std::time::Duration) -> Resul
     let mut child = command
         .spawn()
         .map_err(|error| err(format!("无法运行命令：{error}")))?;
+    // Drain both pipes concurrently while waiting: polling `try_wait` first
+    // deadlocks as soon as a verbose child (`taskkill /t`) fills the OS pipe.
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_reader = std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
+        let mut buffer = Vec::new();
+        if let Some(pipe) = stdout_pipe {
+            pipe.take(MAX_CAPTURE).read_to_end(&mut buffer)?;
+        }
+        Ok(buffer)
+    });
+    let stderr_reader = std::thread::spawn(move || -> std::io::Result<Vec<u8>> {
+        let mut buffer = Vec::new();
+        if let Some(pipe) = stderr_pipe {
+            pipe.take(MAX_CAPTURE).read_to_end(&mut buffer)?;
+        }
+        Ok(buffer)
+    });
     let started = Instant::now();
-    loop {
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status,
             Ok(None) => {}
-            Err(error) => return Err(err(format!("等待命令退出失败：{error}"))),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(err(format!("等待命令退出失败：{error}")));
+            }
         }
         if started.elapsed() >= budget {
             let _ = child.kill();
@@ -224,10 +249,20 @@ pub fn output_within(mut command: Command, budget: std::time::Duration) -> Resul
             )));
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    child
-        .wait_with_output()
-        .map_err(|error| err(format!("读取命令输出失败：{error}")))
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| err("读取命令标准输出线程异常退出。"))?
+        .map_err(|error| err(format!("读取命令输出失败：{error}")))?;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| err("读取命令错误输出线程异常退出。"))?
+        .map_err(|error| err(format!("读取命令输出失败：{error}")))?;
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 pub fn stop_process_tree(info: &ProcessInfo) -> Result<()> {
@@ -273,9 +308,10 @@ pub fn stop_process_tree(info: &ProcessInfo) -> Result<()> {
     wait_for_completion(|| process_has_exited(info))
 }
 
-/// Probe the original identity, not just whether a (possibly reused) PID exists.
-/// Query failures are unknown, never evidence that cleanup succeeded.
-pub fn process_has_exited(info: &ProcessInfo) -> Result<bool> {
+/// Probe the original identity, returning `Some(exit_code)` when it has exited
+/// (`-1` if the kernel handle is already gone or the PID was reused) and `None`
+/// while it is still running. Query failures stay `Err`, never guessed exits.
+pub fn process_exit_code(info: &ProcessInfo) -> Result<Option<i32>> {
     unsafe {
         let handle = OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
@@ -284,7 +320,7 @@ pub fn process_has_exited(info: &ProcessInfo) -> Result<bool> {
         );
         if handle.is_null() {
             return if GetLastError() == ERROR_INVALID_PARAMETER && info.pid != 0 {
-                Ok(true)
+                Ok(Some(-1))
             } else {
                 Err(err("无法验证进程是否已退出。"))
             };
@@ -297,17 +333,27 @@ pub fn process_has_exited(info: &ProcessInfo) -> Result<bool> {
                 if !creation_times_match(info.created.as_deref(), info.created.as_deref()) {
                     return Err(err("进程记录创建时间无效。"));
                 }
-                return Ok(true);
+                return Ok(Some(-1));
             }
             match WaitForSingleObject(handle, 0) {
-                WAIT_OBJECT_0 => Ok(true),
-                WAIT_TIMEOUT => Ok(false),
+                WAIT_OBJECT_0 => {
+                    let mut code: u32 = u32::MAX;
+                    let ok = GetExitCodeProcess(handle, &mut code);
+                    Ok(Some(if ok != 0 { code as i32 } else { -1 }))
+                }
+                WAIT_TIMEOUT => Ok(None),
                 _ => Err(err("无法等待进程退出。")),
             }
         })();
         CloseHandle(handle);
         result
     }
+}
+
+/// Probe the original identity, not just whether a (possibly reused) PID exists.
+/// Query failures are unknown, never evidence that cleanup succeeded.
+pub fn process_has_exited(info: &ProcessInfo) -> Result<bool> {
+    process_exit_code(info).map(|code| code.is_some())
 }
 
 pub(crate) fn wait_for_completion(mut complete: impl FnMut() -> Result<bool>) -> Result<()> {
@@ -579,5 +625,20 @@ mod tests {
     fn utf16_text_has_one_terminator() {
         assert_eq!(wide(""), vec![0]);
         assert_eq!(wide("喵\n"), vec![0x55b5, 10, 0]);
+    }
+
+    #[test]
+    fn output_within_drains_large_stdout_without_pipe_deadlock() {
+        let shell = std::env::var_os("ComSpec").unwrap_or_else(|| "cmd.exe".into());
+        let mut command = hidden_command(shell);
+        // >200 KB of output exceeds the Windows anonymous pipe buffer (~4-64 KB).
+        command.args([
+            "/c",
+            "for /L %i in (1,1,3500) do @echo 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        ]);
+        let output = output_within(command, std::time::Duration::from_secs(5))
+            .expect("must drain stdout concurrently instead of timing out");
+        assert!(output.status.success());
+        assert!(output.stdout.len() > 200_000, "len={}", output.stdout.len());
     }
 }

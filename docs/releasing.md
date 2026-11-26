@@ -1,4 +1,4 @@
-# Windows 构建与发布清单（Tauri 0.1.4）
+# Windows 构建与发布清单（Tauri 0.1.5）
 
 面向维护者/AI。先读 [AGENTS](../AGENTS.md) 和 [维护说明](ai-maintenance.md)。
 普通用户安装见 [README](../README.md)。以下是待执行清单，不是新安装器已通过验收的声明。
@@ -30,6 +30,7 @@ npm run build:ui
 npm run test:smoke
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 cargo test --manifest-path src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc
+cargo test --manifest-path src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc lifecycle_fixture -- --ignored --test-threads=1
 cargo clippy --manifest-path src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc --all-targets -- -D warnings
 ```
 
@@ -90,7 +91,7 @@ Tauri `beforeBuildCommand` 先执行 `npm run build:ui`，Vite 编译两页并�
 
 本地唯一交付目录使用 Tauri 默认的 `src-tauri/target/release/bundle/nsis/`：
 
-- `Pi Launcher_0.1.4_x64-setup.exe`：保留 Tauri 原生文件名，同版本重打包覆盖旧包。
+- `Pi Launcher_0.1.5_x64-setup.exe`：保留 Tauri 原生文件名，同版本重打包覆盖旧包。
 - `SHA256SUMS.txt`：`npm run stage:installer` 原地验证当前版本/架构/产品名、MZ 签名并更新校验和，不复制 EXE、不创建 dist。
 
 仅 GitHub Actions 发布时，显式传入 `--release-output <runner.temp>/pi-launcher-release`，

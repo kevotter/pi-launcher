@@ -97,31 +97,32 @@ mod win {
 
     use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
     use windows_sys::Win32::NetworkManagement::IpHelper::{
-        GetExtendedTcpTable, MIB_TCPROW_OWNER_PID, MIB_TCPTABLE_OWNER_PID,
-        TCP_TABLE_OWNER_PID_LISTENER,
+        GetExtendedTcpTable, MIB_TCP6ROW_OWNER_PID, MIB_TCP6TABLE_OWNER_PID,
+        MIB_TCPTABLE_OWNER_PID, TCP_TABLE_OWNER_PID_LISTENER,
     };
-    use windows_sys::Win32::Networking::WinSock::AF_INET;
+    use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6};
 
     /// dwLocalAddr is in network byte order, so 127.0.0.1 is these four bytes in
     /// memory regardless of the host's endianness.
     const LOOPBACK: u32 = u32::from_ne_bytes([127, 0, 0, 1]);
-    /// A listener bound to the wildcard address blocks a loopback bind too.
+    /// A listener bound to the wildcard address blocks or intercepts loopback too.
     const ANY: u32 = 0;
+    const IPV6_ANY: [u8; 16] = [0; 16];
+    const IPV6_LOOPBACK: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];
+    const IPV6_MAPPED_LOOPBACK: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 127, 0, 0, 1];
 
-    /// `None` when the query itself failed, so the caller can pick a fallback.
-    pub(super) fn port_is_listening(port: u16) -> Option<bool> {
-        // A u32 buffer, not u8: the table is cast to a struct of u32 fields, and
-        // a byte vector is not guaranteed to be suitably aligned.
+    fn query_listener_table(family: u16) -> Option<Vec<u32>> {
+        // A u32 buffer, not u8: both tables are cast to structs of u32-aligned
+        // fields, and a byte vector is not guaranteed to be suitably aligned.
         let mut words: Vec<u32> = Vec::new();
         let mut size: u32 = 0;
-        let mut filled = false;
         for _ in 0..4 {
             let code = unsafe {
                 GetExtendedTcpTable(
                     words.as_mut_ptr().cast::<c_void>(),
                     &mut size,
                     0,
-                    u32::from(AF_INET),
+                    u32::from(family),
                     TCP_TABLE_OWNER_PID_LISTENER,
                     0,
                 )
@@ -133,14 +134,15 @@ mod win {
             if code != 0 {
                 return None;
             }
-            filled = true;
-            break;
+            return Some(words);
         }
-        if !filled {
-            // Kept growing for four rounds: the table is churning. Say nothing
-            // rather than read a buffer that was never filled.
-            return None;
-        }
+        // Kept growing for four rounds: the table is churning. Say nothing
+        // rather than read a buffer that was never filled.
+        None
+    }
+
+    fn v4_port_is_listening(port: u16) -> Option<bool> {
+        let words = query_listener_table(AF_INET)?;
         if words.is_empty() {
             return Some(false);
         }
@@ -148,17 +150,45 @@ mod win {
         unsafe {
             let count = (*table).dwNumEntries as usize;
             let rows = std::slice::from_raw_parts((*table).table.as_ptr(), count);
-            Some(
-                rows.iter().any(|row| {
-                    local_port(row) == port && matches!(row.dwLocalAddr, ANY | LOOPBACK)
-                }),
-            )
+            Some(rows.iter().any(|row| {
+                local_port(row.dwLocalPort) == port && matches!(row.dwLocalAddr, ANY | LOOPBACK)
+            }))
         }
     }
 
+    fn v6_port_is_listening(port: u16) -> Option<bool> {
+        let words = query_listener_table(AF_INET6)?;
+        if words.is_empty() {
+            return Some(false);
+        }
+        let table = words.as_ptr().cast::<MIB_TCP6TABLE_OWNER_PID>();
+        unsafe {
+            let count = (*table).dwNumEntries as usize;
+            let rows = std::slice::from_raw_parts((*table).table.as_ptr(), count);
+            Some(rows.iter().any(|row: &MIB_TCP6ROW_OWNER_PID| {
+                local_port(row.dwLocalPort) == port
+                    && matches!(
+                        row.ucLocalAddr,
+                        IPV6_ANY | IPV6_LOOPBACK | IPV6_MAPPED_LOOPBACK
+                    )
+            }))
+        }
+    }
+
+    /// `None` when the query itself failed, so the caller can pick a fallback.
+    pub(super) fn port_is_listening(port: u16) -> Option<bool> {
+        let v4 = v4_port_is_listening(port)?;
+        if v4 {
+            return Some(true);
+        }
+        // Dual-stack `[::]` (Node's default when `--hostname` is omitted) and
+        // `[::1]` live in the IPv6 listener table, not the IPv4 one.
+        Some(v6_port_is_listening(port).unwrap_or(false))
+    }
+
     /// dwLocalPort carries the port in network byte order in its low 16 bits.
-    fn local_port(row: &MIB_TCPROW_OWNER_PID) -> u16 {
-        u16::from_be(row.dwLocalPort as u16)
+    fn local_port(raw: u32) -> u16 {
+        u16::from_be(raw as u16)
     }
 }
 
@@ -548,6 +578,23 @@ mod tests {
     fn rejects_everything_else() {
         for path in ["C:", "/home/example", r"\Users\example", "", r"1:\Users"] {
             assert!(!is_windows_absolute(path));
+        }
+    }
+
+    #[test]
+    fn port_is_listening_sees_wildcard_ipv4_and_ipv6_listeners() {
+        let v4_any = TcpListener::bind(("0.0.0.0", 0)).unwrap();
+        let v4_port = v4_any.local_addr().unwrap().port();
+        assert!(is_listening(v4_port), "0.0.0.0:{v4_port} must be visible");
+        drop(v4_any);
+
+        if let Ok(v6_loopback) = TcpListener::bind(("::1", 0)) {
+            let v6_port = v6_loopback.local_addr().unwrap().port();
+            assert!(is_listening(v6_port), "[::1]:{v6_port} must be visible");
+        }
+        if let Ok(v6_any) = TcpListener::bind(("::", 0)) {
+            let v6_port = v6_any.local_addr().unwrap().port();
+            assert!(is_listening(v6_port), "[::]:{v6_port} must be visible");
         }
     }
 }

@@ -88,6 +88,7 @@ npm run test:smoke
 npm run build:ui
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 cargo test --manifest-path src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc
+cargo test --manifest-path src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc lifecycle_fixture -- --ignored --test-threads=1
 cargo clippy --manifest-path src-tauri/Cargo.toml --locked --target x86_64-pc-windows-msvc --all-targets -- -D warnings
 ```
 

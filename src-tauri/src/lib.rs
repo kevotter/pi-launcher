@@ -169,8 +169,8 @@ fn queue_open(context: &Context, target: OpenTarget) {
 
 /// What the startup thread is asked to do while it waits.
 enum Command {
-    /// Stop the backend (if we own it) and end the process.
-    Quit,
+    /// Stop the backend (if we own it) and end the process with this exit code.
+    Quit(i32),
     /// Stop our backend instance and start a fresh one, then reload the page.
     Restart,
 }
@@ -516,6 +516,13 @@ fn build_window(
     let new_window_context = context.clone();
     let page_load_context = context.clone();
 
+    // Guard `remember_geometry` across creation and initial positioning: both
+    // emit move/resize events before `maximize` runs, and on a hidden `--tray`
+    // launch `maximize` stays deferred until first show.
+    if placement.maximized {
+        context.pending_maximize.store(true, Ordering::SeqCst);
+    }
+
     let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title(APP_NAME)
         .inner_size(placement.width, placement.height)
@@ -599,18 +606,18 @@ fn build_window(
         // logical coordinates, which cannot express a position on a monitor
         // whose DPI differs from the primary one.
         .center()
-        .build()?;
+        .build()
+        .inspect_err(|_| {
+            context.pending_maximize.store(false, Ordering::SeqCst);
+        })?;
     if let Some((x, y)) = placement.position {
         let _ = window.set_position(tauri::PhysicalPosition::new(x, y));
     }
-    if placement.maximized {
-        if hidden {
-            // `maximize` shows the window, which would defeat a login launch.
-            // Applied by `show_window` the first time the user asks for it.
-            context.pending_maximize.store(true, Ordering::SeqCst);
-        } else {
-            let _ = window.maximize();
-        }
+    if placement.maximized && !hidden {
+        // `maximize` shows the window, which would defeat a login launch; when
+        // hidden, `pending_maximize` stays set for `show_window` to apply.
+        context.pending_maximize.store(false, Ordering::SeqCst);
+        let _ = window.maximize();
     }
     Ok(())
 }
@@ -1003,11 +1010,20 @@ fn show_window(window: &tauri::WebviewWindow<Wry>) {
     let _ = window.set_focus();
 }
 
+/// Minimizing on Windows clears `WS_MAXIMIZE` and parks the window at
+/// `(-32000, -32000)`, while a hidden `--tray` launch defers `maximize()` until
+/// first show. Neither state represents normal user geometry.
+fn should_record_geometry(minimized: bool, pending_maximize: bool, x: i32, y: i32) -> bool {
+    !minimized && !pending_maximize && x > -30_000 && y > -30_000
+}
+
 /// Debounced by `window_state::Store`; this only copies a few numbers.
 fn remember_geometry(window: &tauri::Window<Wry>, context: &Context) {
-    let maximized = window.is_maximized().unwrap_or(false);
-    context.window.record_maximized(maximized);
-    if maximized {
+    if window.is_minimized().unwrap_or(false) || context.pending_maximize.load(Ordering::SeqCst) {
+        return;
+    }
+    if window.is_maximized().unwrap_or(false) {
+        context.window.record_maximized(true);
         return;
     }
     let (Ok(position), Ok(size), Ok(scale)) = (
@@ -1017,6 +1033,9 @@ fn remember_geometry(window: &tauri::Window<Wry>, context: &Context) {
     ) else {
         return;
     };
+    if !should_record_geometry(false, false, position.x, position.y) {
+        return;
+    }
     if !scale.is_finite() || scale <= 0.0 {
         return;
     }
@@ -1027,6 +1046,7 @@ fn remember_geometry(window: &tauri::Window<Wry>, context: &Context) {
     if !width.is_finite() || !height.is_finite() || width < 1.0 || height < 1.0 {
         return;
     }
+    context.window.record_maximized(false);
     context
         .window
         .record_geometry(position.x, position.y, width as u32, height as u32);
@@ -1218,6 +1238,7 @@ struct Running {
 fn startup(context: Context, app: AppHandle, receiver: mpsc::Receiver<Command>) {
     let state_dir = context.state_dir.as_ref().clone();
     let mut running: Option<Running>;
+    let mut exit_code = 0;
 
     loop {
         context.starting.store(true, Ordering::SeqCst);
@@ -1270,10 +1291,15 @@ fn startup(context: Context, app: AppHandle, receiver: mpsc::Receiver<Command>) 
                 *lock(&context.started_at) = None;
                 *lock(&context.last_error) = None;
                 *lock(&context.last_phase) = None;
+                context.closed.store(false, Ordering::SeqCst);
                 context.stopped.store(false, Ordering::SeqCst);
                 context.healthy.store(false, Ordering::SeqCst);
                 log(&state_dir, "Restart requested from the tray");
                 go_to_loading_page(&app, &context, true);
+            }
+            Ok(Command::Quit(code)) => {
+                exit_code = code;
+                break;
             }
             _ => break,
         }
@@ -1288,7 +1314,7 @@ fn startup(context: Context, app: AppHandle, receiver: mpsc::Receiver<Command>) 
         );
     }
     context.window.flush();
-    app.exit(0);
+    app.exit(exit_code);
 }
 
 /// One start attempt: spawn/adopt the backend, show it and start its watchers.
@@ -1322,10 +1348,15 @@ fn launch(
     let generation = context.generation.fetch_add(1, Ordering::SeqCst) + 1;
     emit_phase(app, "workspace", port);
 
+    let abort = |backend: &mut PiBackend, error: &dyn Display| {
+        context.generation.fetch_add(1, Ordering::SeqCst);
+        stop_backend(backend, port, &server, &state_dir);
+        fatal(context, app, &state_dir, error);
+    };
     let url = match Url::parse(&server.url) {
         Ok(url) => url,
         Err(error) => {
-            fatal(context, app, &state_dir, &error);
+            abort(backend, &error);
             return None;
         }
     };
@@ -1334,12 +1365,12 @@ fn launch(
     let window = match wait_for_main_window(app, Duration::from_secs(20)) {
         Some(window) => window,
         None => {
-            fatal(context, app, &state_dir, &err("主窗口不存在"));
+            abort(backend, &err("主窗口不存在"));
             return None;
         }
     };
     if let Err(error) = window.navigate(url) {
-        fatal(context, app, &state_dir, &error);
+        abort(backend, &error);
         return None;
     }
 
@@ -1360,8 +1391,19 @@ fn launch(
 
     if backend.spawned() {
         spawn_child_watcher(context, app, backend.child_handle(), generation);
+    } else if server.owned {
+        if let Some(info) = server.info.clone() {
+            spawn_adopted_watcher(context, app, info, generation);
+        }
     }
-    spawn_health_watcher(context, app, server.url.clone(), generation);
+    spawn_health_watcher(
+        context,
+        app,
+        server.url.clone(),
+        port,
+        server.owned,
+        generation,
+    );
     Some(server)
 }
 
@@ -1408,8 +1450,52 @@ fn spawn_child_watcher(
     }
 }
 
-/// Liveness probe for "process alive, service not answering".
-fn spawn_health_watcher(context: &Context, app: &AppHandle, url: String, generation: u64) {
+/// Watch a launcher-owned backend adopted from a previous run's record file,
+/// where we verified the PID and creation time but have no `std::process::Child`.
+fn spawn_adopted_watcher(
+    context: &Context,
+    app: &AppHandle,
+    info: process::ProcessInfo,
+    generation: u64,
+) {
+    let worker = context.clone();
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("backend-adopted-watch".into())
+        .spawn(move || loop {
+            match process::process_exit_code(&info) {
+                Ok(Some(code)) => {
+                    backend_exited(&worker, &app, generation, code);
+                    return;
+                }
+                Ok(None) => {}
+                Err(_) => return,
+            }
+            if worker.closed.load(Ordering::SeqCst)
+                || worker.generation.load(Ordering::SeqCst) != generation
+            {
+                return;
+            }
+            std::thread::sleep(WATCH_INTERVAL);
+        });
+    if spawned.is_err() {
+        log(
+            &context.state_dir,
+            "Cannot start the adopted backend watcher thread",
+        );
+    }
+}
+
+/// Liveness probe for "process alive, service not answering", plus exit
+/// detection when an unowned external backend closes its listening socket.
+fn spawn_health_watcher(
+    context: &Context,
+    app: &AppHandle,
+    url: String,
+    port: u16,
+    owned: bool,
+    generation: u64,
+) {
     let worker = context.clone();
     let app = app.clone();
     let spawned = std::thread::Builder::new()
@@ -1424,6 +1510,18 @@ fn spawn_health_watcher(context: &Context, app: &AppHandle, url: String, generat
                     return;
                 }
                 if !http::check_server(&url, &worker.closed) {
+                    if !owned && !http::is_listening(port) {
+                        std::thread::sleep(Duration::from_millis(300));
+                        if worker.closed.load(Ordering::SeqCst)
+                            || worker.generation.load(Ordering::SeqCst) != generation
+                        {
+                            return;
+                        }
+                        if !http::is_listening(port) && !http::check_server(&url, &worker.closed) {
+                            external_backend_stopped(&worker, &app, generation);
+                            return;
+                        }
+                    }
                     strikes += 1;
                 } else {
                     strikes = 0;
@@ -1451,6 +1549,44 @@ fn spawn_health_watcher(context: &Context, app: &AppHandle, url: String, generat
     if spawned.is_err() {
         log(&context.state_dir, "Cannot start the backend health thread");
     }
+}
+
+/// An adopted external backend closed its port. Report "stopped" rather than
+/// claiming the process is still alive and unresponsive.
+fn external_backend_stopped(context: &Context, app: &AppHandle, generation: u64) {
+    let _gate = lock(&context.lifecycle);
+    if context.generation.load(Ordering::SeqCst) != generation
+        || context.quitting.load(Ordering::SeqCst)
+    {
+        return;
+    }
+    let state_dir = context.state_dir.as_ref().clone();
+    log(&state_dir, "External Pi Web stopped listening");
+    context.generation.fetch_add(1, Ordering::SeqCst);
+    *lock(&context.server) = None;
+    *lock(&context.started_at) = None;
+    context.healthy.store(false, Ordering::SeqCst);
+    context.stopped.store(true, Ordering::SeqCst);
+
+    let report = ErrorReport {
+        heading: "本地服务已停止",
+        hint: "外部服务已退出；重新启动后可从托盘菜单重连。",
+        message: format!(
+            "复用的外部 Pi Web 服务已停止监听端口。\n\n\
+             若已配置 backendPath，可右键托盘图标选择“重启本地服务”；也可在外部重新启动该服务后再从托盘重试。\n\
+             日志：{}",
+            state_dir.join("launcher.log").display()
+        ),
+    };
+    *lock(&context.last_error) = Some(report.clone());
+    if let Some(window) = app.get_webview_window("main") {
+        if showing_loading_page(&window) {
+            apply_error(&window, &report);
+        } else {
+            go_to_loading_page(app, context, false);
+        }
+    }
+    update_tray_state(app);
 }
 
 /// The backend exited on its own. Keep the launcher alive: the user may want to
@@ -1616,8 +1752,12 @@ fn request_restart(context: &Context) {
 }
 
 fn request_quit(context: &Context, app: &AppHandle) {
-    // Guard on a dedicated flag: `closed` is also set by `fatal`, and a failed
-    // start must not make the tray's "退出" a no-op.
+    request_quit_with_code(context, app, 0);
+}
+
+fn request_quit_with_code(context: &Context, app: &AppHandle, code: i32) {
+    // Guard on a dedicated flag: a failed start must not make the tray's
+    // "退出" a no-op, and duplicate quit signals must not race.
     if context.quitting.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -1627,13 +1767,13 @@ fn request_quit(context: &Context, app: &AppHandle) {
     let sender = lock(&context.shutdown).take();
     match sender {
         Some(sender) => {
-            // The startup thread is gone once it has failed; then there is
+            // The startup thread is gone once it has exited; then there is
             // nothing to wait for and the send fails immediately.
-            if sender.send(Command::Quit).is_err() {
-                app.exit(0);
+            if sender.send(Command::Quit(code)).is_err() {
+                app.exit(code);
             }
         }
-        None => app.exit(0),
+        None => app.exit(code),
     }
 }
 
@@ -1648,17 +1788,16 @@ fn fatal(context: &Context, app: &AppHandle, state_dir: &Path, error: &dyn Displ
         ),
     };
     log_error(state_dir, "Fatal error", error);
-    context.closed.store(true, Ordering::SeqCst);
 
     // Record the failure first: a page that loads after this point replays it
-    // instead of a stale "正在连接本地服务".
-    if let Some(state) = app.try_state::<Context>() {
-        *lock(&state.last_error) = Some(report.clone());
-        // The backend is gone; a stale `server` made the tray keep showing a
-        // green "running" dot and offer "copy address"/"open in browser" for a
-        // port nothing listens on any more.
-        *lock(&state.server) = None;
-    }
+    // instead of a stale "正在连接本地服务". Do not set `context.closed` here:
+    // if Windows refuses the dialog, the launcher stays alive and the tray's
+    // Restart/Quit actions must both continue to work.
+    *lock(&context.last_error) = Some(report.clone());
+    *lock(&context.server) = None;
+    *lock(&context.started_at) = None;
+    context.healthy.store(false, Ordering::SeqCst);
+    context.stopped.store(true, Ordering::SeqCst);
     update_tray_state(app);
     // Show it in the window as well, but only while the loading page is up —
     // writing into the remote Pi Web document would be an intrusion.
@@ -1670,22 +1809,41 @@ fn fatal(context: &Context, app: &AppHandle, state_dir: &Path, error: &dyn Displ
         }
     }
 
-    log(state_dir, "Showing startup error dialog");
-    if process::show_message_box(APP_NAME, &report.message) {
-        // The user has read the dialog; there is nothing left to keep alive.
-        // `app.exit` only queues the shutdown, so returning matters: without it
-        // the "did not display" branch below would log a contradiction.
-        log(state_dir, "Error acknowledged; exiting");
-        app.exit(1);
+    // Never run MessageBoxW on the startup thread: that thread is the sole
+    // consumer of `Command::Restart` and `Command::Quit`.
+    if STARTUP_DIALOG_OPEN.swap(true, Ordering::SeqCst) {
+        log(
+            state_dir,
+            "Error dialog is already open; keeping the window and tray responsive",
+        );
         return;
     }
-    // If Windows refused the dialog, stay alive: the loading page still shows
-    // the reason, and the tray can quit. Exiting here would leave a machine
-    // that cannot display message boxes with no way to learn what happened.
-    log(
-        state_dir,
-        "Windows did not display the error dialog; keeping the window open",
-    );
+    let dir = state_dir.to_path_buf();
+    let dialog_context = context.clone();
+    let dialog_app = app.clone();
+    let message = report.message;
+    let spawned = std::thread::Builder::new()
+        .name("fatal-dialog".into())
+        .spawn(move || {
+            log(&dir, "Showing startup error dialog");
+            let shown = process::show_message_box(APP_NAME, &message);
+            STARTUP_DIALOG_OPEN.store(false, Ordering::SeqCst);
+            if shown {
+                log(&dir, "Error acknowledged; exiting");
+                request_quit_with_code(&dialog_context, &dialog_app, 1);
+            } else {
+                // If Windows refused the dialog, stay alive: the loading page
+                // still shows the reason, and the tray can restart or quit.
+                log(
+                    &dir,
+                    "Windows did not display the error dialog; keeping the window open",
+                );
+            }
+        });
+    if spawned.is_err() {
+        STARTUP_DIALOG_OPEN.store(false, Ordering::SeqCst);
+        log(state_dir, "Cannot start the fatal-dialog thread");
+    }
 }
 
 #[cfg(test)]
@@ -1858,5 +2016,15 @@ mod navigation_tests {
         ] {
             assert!(!is_external_url(&url(value)), "{value}");
         }
+    }
+
+    #[test]
+    fn geometry_guard_ignores_minimized_iconic_and_deferred_maximize_states() {
+        assert!(should_record_geometry(false, false, 120, 80));
+        assert!(should_record_geometry(false, false, -1920, 0));
+        assert!(!should_record_geometry(true, false, 120, 80));
+        assert!(!should_record_geometry(false, true, 120, 80));
+        assert!(!should_record_geometry(false, false, -32_000, -32_000));
+        assert!(!should_record_geometry(false, false, 100, -32_000));
     }
 }

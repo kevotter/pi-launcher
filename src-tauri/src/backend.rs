@@ -163,12 +163,8 @@ impl PiBackend {
     fn ensure_runtime(&mut self) -> Result<()> {
         let node = self.resolve_node()?;
         let version = self.node_version(&node)?;
-        let mut parts = version.trim_start_matches('v').split('.');
-        let major = parts.next().and_then(|v| v.parse::<u32>().ok());
-        let minor = parts.next().and_then(|v| v.parse::<u32>().ok());
-        let (major, minor) = match (major, minor) {
-            (Some(a), Some(b)) => (a, b),
-            _ => return Err(err(format!("无法识别 Node.js 版本：{version}"))),
+        let Some((major, minor)) = parse_node_major_minor(&version) else {
+            return Err(err(format!("无法识别 Node.js 版本：{version}")));
         };
         if major < 22 || (major == 22 && minor < 19) {
             return Err(err(format!(
@@ -207,7 +203,11 @@ impl PiBackend {
                     && cached.get("length").and_then(Value::as_u64) == Some(length)
                     && cached.get("modified").and_then(Value::as_u64) == Some(modified);
                 if matches {
-                    if let Some(version) = cached.get("version").and_then(Value::as_str) {
+                    if let Some(version) = cached
+                        .get("version")
+                        .and_then(Value::as_str)
+                        .filter(|v| parse_node_major_minor(v).is_some())
+                    {
                         log(
                             &self.state_dir,
                             &format!("Node version cached: {version} ({path})"),
@@ -218,23 +218,38 @@ impl PiBackend {
             }
         }
 
+        // Probe with the sanitized server environment so inherited NODE_OPTIONS
+        // or ELECTRON_RUN_AS_NODE cannot corrupt stdout or make `node` fail.
         let output = crate::process::output_within(
             {
                 let mut command = crate::process::hidden_command(node);
-                command.arg("--version");
+                command.arg("--version").env_clear().envs(&self.env);
                 command
             },
             std::time::Duration::from_secs(5),
         )?;
+        if !output.status.success() {
+            let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let code = output.status.code().unwrap_or(-1);
+            return Err(err(if detail.is_empty() {
+                format!("检查 Node.js 版本失败（退出码 {code}）。")
+            } else {
+                format!("检查 Node.js 版本失败（退出码 {code}）：{detail}")
+            }));
+        }
         let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let record = serde_json::json!({
-            "path": path,
-            "length": length,
-            "modified": modified,
-            "version": version,
-        });
-        if let Ok(text) = serde_json::to_string(&record) {
-            let _ = fs::write(&cache_path, text);
+        // Never persist an unparseable/empty string: a transient failure would
+        // otherwise poison every future start until `node.exe` changes on disk.
+        if parse_node_major_minor(&version).is_some() {
+            let record = serde_json::json!({
+                "path": path,
+                "length": length,
+                "modified": modified,
+                "version": version,
+            });
+            if let Ok(text) = serde_json::to_string(&record) {
+                let _ = fs::write(&cache_path, text);
+            }
         }
         Ok(version)
     }
@@ -452,7 +467,7 @@ impl PiBackend {
     fn wait_for_port_free(&self, port: u16, budget: std::time::Duration) -> bool {
         let started = Instant::now();
         loop {
-            if is_port_free(port) {
+            if !is_listening(port) && is_port_free(port) {
                 return true;
             }
             if started.elapsed() >= budget {
@@ -497,11 +512,11 @@ impl PiBackend {
         }
         let url = format!("http://{HOST}:{port}");
         let existing = self.get_owned_process(port);
-        // Bind test first: it is instantaneous, whereas an HTTP probe against a
-        // closed port burns the whole connect budget (150 ms here, ~2 s on
-        // machines with a loopback filter driver). Nothing can be listening on
-        // a port this process can bind, so the probe would only ever time out.
-        let listening = if is_port_free(port) {
+        // Listener-table lookup first: it is instantaneous, holds nothing (so a
+        // concurrently booting backend cannot fail with EADDRINUSE), and also
+        // sees non-exclusive wildcard (`0.0.0.0` / `[::]`) listeners on Windows
+        // where a loopback `bind()` test would falsely succeed.
+        let listening = if !is_listening(port) {
             false
         } else {
             check_server(&url, &self.closed)
@@ -559,7 +574,7 @@ impl PiBackend {
                 )));
             }
         }
-        if !is_port_free(port) {
+        if is_listening(port) || !is_port_free(port) {
             return Err(err(format!(
                 "端口 {port} 已被其他程序占用；不会停止该程序。"
             )));
@@ -634,6 +649,26 @@ impl PiBackend {
         )
     }
 
+    /// Wait briefly for the async stdout/stderr pipe threads to flush a tail
+    /// after an immediate child exit, then return whatever was captured.
+    fn wait_output_tail(&self) -> String {
+        for _ in 0..20 {
+            let has_output = self
+                .output_tail
+                .lock()
+                .map(|tail| !tail.is_empty())
+                .unwrap_or(false);
+            if has_output {
+                break;
+            }
+            sleep(25);
+        }
+        self.output_tail
+            .lock()
+            .map(|v| v.clone())
+            .unwrap_or_default()
+    }
+
     fn await_backend(&mut self, port: u16, spec: &BackendSpec) -> Result<ServerInfo> {
         let url = format!("http://{HOST}:{port}");
         let pid = self.child_pid.unwrap_or(0);
@@ -645,13 +680,24 @@ impl PiBackend {
         }) {
             Some(info) => info,
             None => {
-                return Err(err(format!(
-                    "本地 Pi Web 未能启动：{}",
-                    self.output_tail
-                        .lock()
-                        .map(|v| v.clone())
-                        .unwrap_or_default()
-                )))
+                // If Node died before `NtQueryInformationProcess` could read its
+                // command line, `self.child` still holds the exit code and the
+                // pipe threads may still be flushing stderr.
+                let exited = {
+                    let mut guard = crate::util::lock(&self.child);
+                    match guard.as_mut() {
+                        Some(child) => child.try_wait()?,
+                        None => None,
+                    }
+                };
+                let tail = self.wait_output_tail();
+                if let Some(status) = exited {
+                    return Err(Error(format!(
+                        "Pi Web exited ({})：{tail}",
+                        status.code().unwrap_or(-1)
+                    )));
+                }
+                return Err(err(format!("本地 Pi Web 未能启动：{tail}")));
             }
         };
         info.version = Some(spec.version.clone());
@@ -681,28 +727,10 @@ impl PiBackend {
                 }
             };
             if let Some(status) = exited {
-                // The output pipe threads run on their own threads and write the
-                // tail asynchronously, so reading it here used to produce an
-                // empty message for the most common failure (a config error that
-                // kills Node immediately). Give them a moment.
-                for _ in 0..20 {
-                    let has_output = self
-                        .output_tail
-                        .lock()
-                        .map(|tail| !tail.is_empty())
-                        .unwrap_or(false);
-                    if has_output {
-                        break;
-                    }
-                    sleep(25);
-                }
+                let tail = self.wait_output_tail();
                 return Err(Error(format!(
-                    "Pi Web exited ({})：{}",
+                    "Pi Web exited ({})：{tail}",
                     status.code().unwrap_or(-1),
-                    self.output_tail
-                        .lock()
-                        .map(|v| v.clone())
-                        .unwrap_or_default()
                 )));
             }
             probes += 1;
@@ -866,6 +894,18 @@ fn normalize_windows_path(path: PathBuf) -> PathBuf {
         Some(rest) => PathBuf::from(rest),
         None => path,
     }
+}
+
+fn parse_node_major_minor(version: &str) -> Option<(u32, u32)> {
+    let clean = version.strip_prefix('v').unwrap_or(version);
+    if clean.is_empty() || clean.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let mut parts = clean.split('.');
+    let major = parts.next()?.parse::<u32>().ok()?;
+    let minor = parts.next()?.parse::<u32>().ok()?;
+    parts.next().filter(|patch| !patch.is_empty())?;
+    Some((major, minor))
 }
 
 /// Build the exact environment handed to the backend process.
@@ -1581,20 +1621,20 @@ http.createServer((req, res) => {
         let closed = fixture.backend.closed.clone();
         let cancel = std::thread::spawn(move || {
             let started = Instant::now();
-            while (!record.exists() || is_port_free(port))
+            while (!record.exists() || !is_listening(port))
                 && started.elapsed() < std::time::Duration::from_secs(3)
             {
                 sleep(10);
             }
+            let ready_to_cancel = record.exists() && is_listening(port);
             closed.store(true, Ordering::SeqCst);
+            ready_to_cancel
         });
         let result = fixture.backend.start(port);
-        cancel.join().unwrap();
+        let spawned_before_cancel = cancel.join().unwrap();
         assert!(result.is_err());
-        assert!(
-            fixture.backend.child_pid.is_some(),
-            "cancel only after spawn"
-        );
+        assert!(spawned_before_cancel, "cancel only after spawn");
+        assert!(!fixture.backend.spawned());
         assert!(fixture.backend.child_has_exited().unwrap());
         assert!(fixture
             .backend
@@ -1662,5 +1702,87 @@ http.createServer((req, res) => {
     fn release_label_tolerates_an_absent_manifest() {
         let path = std::env::temp_dir().join("pi-launcher-test-does-not-exist.json");
         assert_eq!(read_release_label(&path, "0.1.0"), None);
+    }
+
+    #[test]
+    fn node_version_parser_rejects_empty_and_polluted_outputs() {
+        assert_eq!(parse_node_major_minor("v22.19.0"), Some((22, 19)));
+        assert_eq!(parse_node_major_minor("24.1.2-nightly"), Some((24, 1)));
+        for invalid in [
+            "",
+            "v",
+            "v22",
+            "v22.19",
+            "v22.19.",
+            "injected\nv22.19.0",
+            "nope",
+        ] {
+            assert_eq!(parse_node_major_minor(invalid), None, "{invalid:?}");
+        }
+    }
+
+    #[test]
+    fn node_version_never_trusts_or_persists_failed_probe_cache() {
+        let dir = std::env::temp_dir().join(format!(
+            "pi-launcher-node-cache-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let fake_exe = std::env::var_os("ComSpec")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(r"C:\Windows\System32\cmd.exe"));
+        let metadata = fs::metadata(&fake_exe).unwrap();
+        let modified = metadata
+            .modified()
+            .unwrap()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // A poisoned empty cache entry must be ignored rather than returned.
+        fs::write(
+            dir.join("node-runtime.json"),
+            serde_json::json!({
+                "path": fake_exe.to_string_lossy(),
+                "length": metadata.len(),
+                "modified": modified,
+                "version": "",
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let backend = PiBackend {
+            state_dir: dir.clone(),
+            config: config(),
+            node: None,
+            env: HashMap::new(),
+            closed: Arc::new(AtomicBool::new(false)),
+            child: Arc::new(Mutex::new(None)),
+            child_pid: None,
+            child_info: None,
+            job: None,
+            output_tail: Arc::new(Mutex::new(String::new())),
+        };
+        // 1. A poisoned empty cache entry must be ignored rather than returned.
+        let cached_probe = backend.node_version(&fake_exe);
+        assert_ne!(
+            cached_probe.as_deref().ok(),
+            Some(""),
+            "poisoned empty cache must not be trusted"
+        );
+        // 2. Non-Node output must never create a fresh cache file either.
+        let _ = fs::remove_file(dir.join("node-runtime.json"));
+        let probed = backend.node_version(&fake_exe);
+        if let Ok(version) = &probed {
+            assert!(parse_node_major_minor(version).is_none());
+        }
+        assert!(
+            !dir.join("node-runtime.json").exists(),
+            "failed or non-Node output must never be cached"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 }
