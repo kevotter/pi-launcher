@@ -1,6 +1,6 @@
 [package]
 name = "pi-launcher-tauri"
-version = "0.1.5"
+version = "0.1.6"
 description = "Windows desktop launcher for an npm-installed or locally built Pi Web backend (Tauri v2)"
 edition = "2021"
 rust-version = "1.90"

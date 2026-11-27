@@ -1,4 +1,4 @@
-# Windows 构建与发布清单（Tauri 0.1.5）
+# Windows 构建与发布清单（Tauri 0.1.6）
 
 面向维护者/AI。先读 [AGENTS](../AGENTS.md) 和 [维护说明](ai-maintenance.md)。
 普通用户安装见 [README](../README.md)。以下是待执行清单，不是新安装器已通过验收的声明。
@@ -91,7 +91,7 @@ Tauri `beforeBuildCommand` 先执行 `npm run build:ui`，Vite 编译两页并�
 
 本地唯一交付目录使用 Tauri 默认的 `src-tauri/target/release/bundle/nsis/`：
 
-- `Pi Launcher_0.1.5_x64-setup.exe`：保留 Tauri 原生文件名，同版本重打包覆盖旧包。
+- `Pi Launcher_0.1.6_x64-setup.exe`：保留 Tauri 原生文件名，同版本重打包覆盖旧包。
 - `SHA256SUMS.txt`：`npm run stage:installer` 原地验证当前版本/架构/产品名、MZ 签名并更新校验和，不复制 EXE、不创建 dist。
 
 仅 GitHub Actions 发布时，显式传入 `--release-output <runner.temp>/pi-launcher-release`，
@@ -132,7 +132,7 @@ push/PR 执行 Windows Node 工具检查及 Rust fmt/test/clippy，Node 22 缓�
 
 1. 检出与 build 相同的固定 SHA，下载本次 run 的附件，不重新构建。
 2. `publish-release.js` 校验纯文件/非 symlink、ASCII 白名单与 EXE 哈希，缓存已校验字节后上传。
-3. 从该 SHA 的 package version 生成 `v0.1.5`，完整分页查询所有 Release（含未打标签的草稿）。
+3. 从该 SHA 的 package version 生成 `v0.1.6`，完整分页查询所有 Release（含未打标签的草稿）。
    已有同名 tag 或 Release 就停止，即使 tag 指向同一 SHA；API 查询失败不当作不存在。
 4. 原子创建指向构建 SHA 的 tag，再建草稿；上传 EXE/校验文件并检查服务端实际文件名一致后才公开。
    prerelease 标记按版本识别，body 顶部含 Tauri 版直接覆盖升级与数据保留警告（旧 Electron 迁移只在 README 说明）；正文 notes 取自 CHANGELOG 该版本小节。
