@@ -36,7 +36,7 @@ async function openTray(page, projectName, maxHeight = 900) {
     let enabled = false;
     const publish = () => window.__setTrayState?.({
       ready: true, starting: false, healthy: true, canRestart: true,
-      endpoint: '127.0.0.1:30141', version: 'v0.15.0', label: 'Isolated UI fixture',
+      endpoint: '127.0.0.1:30141', version: '0.15.0', label: 'Isolated UI fixture',
       startedAt: Date.now() - 90_000,
       autostart: { enabled, error: null }, maxHeight,
     });
@@ -100,6 +100,7 @@ test('content-fit menu has no overflow, blank footer, underlined labels or CSP e
   expect(errors).toEqual([]);
   await expect(page.getByRole('switch', { name: '开机自启' })).not.toBeChecked();
   await expect(page.getByText('缩放', { exact: true })).toHaveCount(0);
+  await expect(page.locator('#version')).toHaveText('v0.15.0');
   await expect(page.locator('#autostart-status')).toHaveCSS('clip-path', 'inset(50%)');
   await page.screenshot({ path: info.outputPath('tray.png'), omitBackground: true });
   await info.attach('measured-size', { body: `${natural}\n${JSON.stringify(geometry)}`, contentType: 'text/plain' });

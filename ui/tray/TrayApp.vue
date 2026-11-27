@@ -46,6 +46,13 @@ const uptime = computed(() => {
   return value ? `已运行 ${value}` : '';
 });
 const badgeTitle = computed(() => [badge.value.hint, uptime.value].filter(Boolean).join(' · '));
+// Native state is the only source: the popover has no build-time version of its
+// own, so a push that never arrives leaves the header without a version rather
+// than showing one that could disagree with the running executable.
+const version = computed(() => {
+  const value = state.value.version;
+  return typeof value === 'string' && value ? value : '';
+});
 const restartDisabled = computed(() => state.value.starting === true || state.value.canRestart === false);
 // Must match `.tray-wrapper` padding in tray.css: the gutters belong to the
 // window, so the card has to give up both sides of the work area Rust handed us.
@@ -127,6 +134,9 @@ onBeforeUnmount(() => {
           <div class="head-text">
             <h1>Pi Launcher</h1>
           </div>
+          <span v-if="version" class="version-slot">
+            <span id="version" class="tray-version" :title="`当前版本 v${version}`">v{{ version }}</span>
+          </span>
           <span id="badge" class="status-tag" :data-status="phase" :title="badgeTitle"
             role="status" aria-live="polite">
             <span class="status-dot" aria-hidden="true" />

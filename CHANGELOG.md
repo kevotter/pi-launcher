@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6 — Tray version label
+
+- The tray header shows the running build as a small pill centred between the name and the status badge (`Pi Launcher v0.1.6`). The version comes from the crate manifest and travels in the same `eval` state push the badge already uses, so the menu still needs no IPC and adds no second header row; a state push without a version simply leaves the pill out.
+- The configuration guide no longer tells every upgrader to uninstall first. Its "quit all old launchers, uninstall the old client, never run two clients" wording was written for the Electron client and contradicted the in-place upgrade the README documents; it now applies only to versions before 0.1.0, and a 0.1.x install upgrades by running the new installer over the existing copy.
+
 ## 0.1.5 — Compact tray menu and lifecycle fixes
 
 - The tray popover rendered at 328×402 logical pixels, roughly 1.9× the area of a Windows context menu holding the same eight actions. Width is now 280, exactly the floor the tray bridge and `tray_layout.rs` already enforced, so the measured size is accepted instead of being silently clamped back up. Rows land on 31.5 px against the native 32, the header band drops 43 → 32 px (20 px icon, 1.05 rem title) and dividers 9 → 7 px; the menu now sits at about 1.35× a native one. Every action, the status badge and the startup switch are unchanged.

@@ -73,10 +73,23 @@ describe('real PrimeVue tray mounted with Vue createApp', () => {
     await state({ enabled: true, error: null });
     expect(input().checked).toBe(true);
     expect(input().getAttribute('aria-checked')).toBe('true');
-    // The address/version row is gone: only the header and the actions remain.
+    // The address row is gone; the version now sits in the header, between the
+    // name and the status badge.
     expect(root.querySelector('#endpoint')).toBeNull();
-    expect(root.querySelector('#version')).toBeNull();
+    expect(q('#version').textContent).toBe('v1.2.3');
+    expect(q('#version').parentElement.nextElementSibling.id).toBe('badge');
     expect(q('#badge-text').textContent).toBe('运行中');
+  });
+
+  it('shows the header version only when native state reports one', async () => {
+    expect(root.querySelector('#version')).toBeNull();
+    window.__setTrayState({ ready: true, starting: false, version: '' });
+    await flush();
+    expect(root.querySelector('#version')).toBeNull();
+    window.__setTrayState({ version: '0.1.5' });
+    await flush();
+    expect(q('#version').textContent).toBe('v0.1.5');
+    expect(q('#version').title).toBe('当前版本 v0.1.5');
   });
 
   it('shows an explicitly unknown disabled switch with tooltip and live error, not an off state or visible footnote', async () => {

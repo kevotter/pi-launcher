@@ -698,9 +698,10 @@ fn update_tray_state(app: &AppHandle) {
     let Some(context) = app.try_state::<Context>() else {
         return;
     };
-    // Only what the popover actually renders. The address and version used to
-    // be pushed for a header row the menu no longer has; copying the address
-    // stays available through the `copy` action.
+    // Only what the popover actually renders. The address is no longer part of
+    // the menu; copying it stays available through the `copy` action. The
+    // version comes from the crate manifest, which `check:version` keeps in
+    // step with package.json and tauri.conf.json.
     let ready = lock(&context.server).is_some();
     let autostart = lock(&context.autostart).clone();
     let starting = context.starting.load(Ordering::SeqCst);
@@ -720,6 +721,7 @@ fn update_tray_state(app: &AppHandle) {
         "stopped": context.stopped.load(Ordering::SeqCst),
         "startedAt": started_at,
         "canRestart": !starting && !context.quitting.load(Ordering::SeqCst),
+        "version": env!("CARGO_PKG_VERSION"),
     });
     let script = format!("if (window.__setTrayState) window.__setTrayState({payload});");
     if let Some(window) = app.get_webview_window(TRAY_WINDOW) {

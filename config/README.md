@@ -15,8 +15,9 @@
 
 设置 `PI_LAUNCHER_DATA_DIR` 时，应用改读该目录中的 `launcher-config.json`，建议用绝对路径。
 仅修改仓库模板不会改变实际设置。旧 Electron 版同一路径的配置可保留沿用；其他旧名称目录不会自动迁移。
-**先退出所有旧启动器、手动卸载旧客户端，再装新版；保留启动器配置及 `.pi` 凭据和会话。**
-WebView2 与 Electron 的 browser local storage / profile 不保证互相迁移，不要让两个客户端同时运行。
+**0.1.x（Tauri 版）之间升级：先退出正在运行的 Pi Launcher（含托盘），直接运行新安装包覆盖安装，不需要卸载；保留启动器配置及 `.pi` 凭据和会话。**
+**从旧 Electron 客户端（0.1.0 之前）迁移：先退出所有旧启动器、手动卸载旧客户端，再装新版；不要同时运行两个客户端，同样保留启动器配置及 `.pi` 数据目录。**
+WebView2 与 Electron 的 browser local storage / profile 不保证互相迁移。
 
 ## 第一次配置
 

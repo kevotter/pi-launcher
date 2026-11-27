@@ -75,6 +75,20 @@ body {
   margin: 0; font-size: 1.05rem; font-weight: 650; letter-spacing: -.2px; line-height: 1.25;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* The running build, centred in the gap between the name and the badge. The
+   slot claims whatever room is left, so the pill sits in the middle of that gap
+   instead of hugging the title, and the badge keeps its right edge. */
+.version-slot { flex: 1 1 auto; min-width: 0; text-align: center; }
+/* A quiet pill: a 9% ink wash, smaller and greyer than the status badge, so the
+   build number reads as metadata rather than a second state. No border and a
+   line-height under the title's keeps the header at one row. */
+.tray-version {
+  display: inline-block; max-width: 100%; padding: 1px 7px; border-radius: 99px;
+  background: color-mix(in srgb, var(--tray-ink) 9%, transparent);
+  color: var(--tray-muted); font-size: .75rem; font-weight: 500;
+  letter-spacing: .1px; line-height: 1.4; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
 .status-tag {
   display: inline-flex; align-items: center; gap: 5px; flex: none; margin-left: auto;
   padding: 3px 7px; border-radius: 99px; background: var(--tray-hover);
